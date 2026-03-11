@@ -1,57 +1,59 @@
 """
 MAPA Runner
 ===========
-Wraps the MAPA JAR invocation so the pipeline can generate result.csv
+Wraps the CallTree.jar invocation so the pipeline can generate result.csv
 automatically from raw COBOL source files — no manual step required.
 
-MAPA (Mainframe Application Portfolio Analyser) is an open-source static
-analysis tool built on ProLeap's COBOL parser. It produces a CSV that maps
-programs → paragraphs → data items → call/perform/copy relationships.
+MAPA (github.com/cschneid-the-elder/mapa) is an open-source static analysis
+tool for COBOL portfolios. CallTree.jar scans COBOL programs and produces a
+CSV containing program structure, CALL chains, CICS/SQL references, and data
+definitions.
 
-GitHub: https://github.com/mapa-devs/mapa  (JAR in Releases)
+GitHub : https://github.com/cschneid-the-elder/mapa
+JAR    : https://github.com/cschneid-the-elder/mapa/raw/refs/heads/master/cobol/CallTree.jar
 
-Typical invocation:
-    java -jar mapa.jar --input <cobol-dir> --output <result.csv>
+Actual CLI invocation:
+    java -jar CallTree.jar -fileList <file-listing-cobol-paths> -out result.csv [-copy <copybook-dir>]
 
 This module:
-  1. Optionally auto-downloads the JAR from GitHub if not present locally.
-  2. Invokes the JAR via subprocess with configurable JVM options.
-  3. Validates that the output CSV was produced and is non-empty.
-  4. Returns a structured result dict for LangGraph agent consumption.
+  1. Optionally auto-downloads CallTree.jar from GitHub if not present locally.
+  2. Writes a temporary file-list of all .cbl/.cob files found in cobol_dir.
+  3. Invokes CallTree.jar via subprocess with the correct flags.
+  4. Validates that the output CSV was produced and is non-empty.
+  5. Returns a structured result dict for LangGraph agent consumption.
 """
 
 import logging
 import subprocess
+import tempfile
 import urllib.request
 import urllib.error
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Default GitHub release URL for MAPA JAR
-# Update this to the actual release URL once the open-source repo is confirmed.
+# Direct download URL — raw GitHub content (not the blob page)
 MAPA_DEFAULT_JAR_URL = (
-    "https://github.com/mapa-devs/mapa/releases/latest/download/mapa.jar"
+    "https://github.com/cschneid-the-elder/mapa/raw/refs/heads/master/cobol/CallTree.jar"
 )
 
-# Fallback: ProLeap-based portfolio analyser
-PROLEAP_ANALYSER_URL = (
-    "https://github.com/uwol/proleap-cobol-parser/releases/latest/download/proleap-cobol-parser.jar"
-)
+# Default local JAR name
+MAPA_DEFAULT_JAR_NAME = "CallTree.jar"
 
 
 class MapaRunner:
     """
-    Runs the MAPA JAR against a directory of COBOL source files and
+    Runs MAPA's CallTree.jar against a directory of COBOL source files and
     produces a result.csv that feeds the Neo4j ingestion pipeline.
 
     Usage::
 
-        runner = MapaRunner(jar_path="./mapa.jar")
+        runner = MapaRunner(jar_path="./CallTree.jar")
         result = runner.run(
             cobol_dir="./cobol_samples",
             output_csv="./cobol_samples/result.csv",
+            copybook_dir="./copybooks",   # optional
         )
         if result["success"]:
             print(f"Generated: {result['csv_path']}")
@@ -61,7 +63,7 @@ class MapaRunner:
 
     def __init__(
         self,
-        jar_path: str = "./mapa.jar",
+        jar_path: str = f"./{MAPA_DEFAULT_JAR_NAME}",
         jar_url: Optional[str] = None,
         java_executable: str = "java",
         jvm_opts: str = "-Xmx2g",
@@ -81,20 +83,29 @@ class MapaRunner:
         self,
         cobol_dir: str,
         output_csv: str,
+        copybook_dir: Optional[str] = None,
         extra_args: Optional[list] = None,
     ) -> Dict:
         """
-        Run MAPA against ``cobol_dir`` and write ``output_csv``.
+        Run CallTree.jar against ``cobol_dir`` and write ``output_csv``.
+
+        Parameters
+        ----------
+        cobol_dir    : directory scanned recursively for .cbl/.cob files
+        output_csv   : path for the generated CSV (-out flag)
+        copybook_dir : optional directory containing copybooks (-copy flag)
+        extra_args   : additional raw CLI flags passed verbatim
 
         Returns a dict::
 
             {
-                "success": bool,
-                "csv_path": str,          # populated on success
+                "success"   : bool,
+                "csv_path"  : str,    # populated on success
                 "returncode": int,
-                "stdout": str,
-                "stderr": str,
-                "error": str,             # populated on failure
+                "stdout"    : str,
+                "stderr"    : str,
+                "row_count" : int,    # populated on success
+                "error"     : str,    # populated on failure
             }
         """
         cobol_path = Path(cobol_dir)
@@ -105,72 +116,93 @@ class MapaRunner:
         if not jar_result["success"]:
             return {**jar_result, "csv_path": "", "returncode": -1, "stdout": "", "stderr": ""}
 
-        # 2. Validate COBOL directory
+        # 2. Collect COBOL source files
         if not cobol_path.is_dir():
             return self._error(f"COBOL source directory not found: {cobol_path}")
 
-        cobol_files = list(cobol_path.glob("**/*.cbl")) + list(cobol_path.glob("**/*.cob"))
+        cobol_files = (
+            list(cobol_path.glob("**/*.cbl"))
+            + list(cobol_path.glob("**/*.cob"))
+            + list(cobol_path.glob("**/*.CBL"))
+            + list(cobol_path.glob("**/*.COB"))
+        )
+        # Deduplicate (case-insensitive glob may overlap on case-sensitive FS)
+        cobol_files = list({f.resolve(): f for f in cobol_files}.values())
+
         if not cobol_files:
             return self._error(f"No .cbl/.cob files found in: {cobol_path}")
 
-        logger.info(
-            "Running MAPA on %d COBOL file(s) in %s", len(cobol_files), cobol_path
-        )
+        logger.info("Running CallTree.jar on %d COBOL file(s) in %s", len(cobol_files), cobol_path)
 
         # 3. Ensure output directory exists
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 4. Build the command
-        cmd = self._build_command(cobol_path, csv_path, extra_args or [])
-        logger.debug("MAPA command: %s", " ".join(cmd))
+        # 4. Write a temp file-list and build the command
+        #    CallTree.jar uses -fileList <path-to-file> where each line is a COBOL file path
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, prefix="mapa_filelist_"
+        ) as flist:
+            flist.write("\n".join(str(f) for f in cobol_files))
+            flist_path = flist.name
 
-        # 5. Execute
         try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=600,  # 10-minute timeout for large portfolios
-            )
-        except FileNotFoundError:
-            return self._error(
-                f"Java executable not found: '{self.java_executable}'. "
-                "Please install JDK 11+ and ensure 'java' is on your PATH."
-            )
-        except subprocess.TimeoutExpired:
-            return self._error("MAPA JAR timed out after 600 seconds.")
-        except Exception as exc:
-            return self._error(f"Subprocess error: {exc}")
+            cmd = self._build_command(flist_path, csv_path, copybook_dir, extra_args or [])
+            logger.debug("MAPA command: %s", " ".join(cmd))
 
-        if proc.returncode != 0:
+            # 5. Execute
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,  # 10-minute timeout for large portfolios
+                )
+            except FileNotFoundError:
+                return self._error(
+                    f"Java executable not found: '{self.java_executable}'. "
+                    "Please install JDK 11+ and ensure 'java' is on your PATH."
+                )
+            except subprocess.TimeoutExpired:
+                return self._error("CallTree.jar timed out after 600 seconds.")
+            except Exception as exc:
+                return self._error(f"Subprocess error: {exc}")
+
+            if proc.returncode != 0:
+                return {
+                    "success": False,
+                    "csv_path": "",
+                    "returncode": proc.returncode,
+                    "stdout": proc.stdout,
+                    "stderr": proc.stderr,
+                    "row_count": 0,
+                    "error": (
+                        f"CallTree.jar exited with code {proc.returncode}. "
+                        f"stderr: {proc.stderr[:500]}"
+                    ),
+                }
+
+            # 6. Validate output
+            if not csv_path.exists():
+                return self._error(
+                    f"CallTree.jar succeeded (rc=0) but {csv_path} was not created. "
+                    "Check that -out flag is supported by your JAR version."
+                )
+
+            row_count = self._count_csv_rows(csv_path)
+            logger.info("CallTree.jar complete — %d rows in %s", row_count, csv_path)
+
             return {
-                "success": False,
-                "csv_path": "",
+                "success": True,
+                "csv_path": str(csv_path),
                 "returncode": proc.returncode,
                 "stdout": proc.stdout,
                 "stderr": proc.stderr,
-                "error": f"MAPA exited with code {proc.returncode}. stderr: {proc.stderr[:500]}",
+                "row_count": row_count,
+                "error": "",
             }
-
-        # 6. Validate output
-        if not csv_path.exists():
-            return self._error(
-                f"MAPA succeeded (rc=0) but {csv_path} was not created. "
-                "Check MAPA version and --output flag compatibility."
-            )
-
-        row_count = self._count_csv_rows(csv_path)
-        logger.info("MAPA complete — %d rows in %s", row_count, csv_path)
-
-        return {
-            "success": True,
-            "csv_path": str(csv_path),
-            "returncode": proc.returncode,
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
-            "row_count": row_count,
-            "error": "",
-        }
+        finally:
+            # Clean up the temp file-list
+            Path(flist_path).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------ #
     #  JAR management                                                      #
@@ -179,21 +211,21 @@ class MapaRunner:
     def _ensure_jar(self) -> Dict:
         """Return success if JAR exists; try to download it if not."""
         if self.jar_path.exists():
-            logger.debug("MAPA JAR found at %s", self.jar_path)
+            logger.debug("CallTree.jar found at %s", self.jar_path)
             return {"success": True, "error": ""}
 
         if not self.auto_download:
             return self._error(
                 f"MAPA JAR not found at {self.jar_path}. "
-                "Set MAPA_JAR_PATH or place mapa.jar in the project root. "
+                f"Set MAPA_JAR_PATH or place {MAPA_DEFAULT_JAR_NAME} in the project root. "
                 "Download from: " + self.jar_url
             )
 
-        logger.info("MAPA JAR not found — attempting auto-download from %s", self.jar_url)
+        logger.info("CallTree.jar not found — downloading from %s", self.jar_url)
         return self._download_jar()
 
     def _download_jar(self) -> Dict:
-        """Download the MAPA JAR from GitHub releases."""
+        """Download CallTree.jar from the GitHub raw URL."""
         self.jar_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             logger.info("Downloading %s → %s", self.jar_url, self.jar_path)
@@ -204,13 +236,17 @@ class MapaRunner:
                     f"Downloaded file at {self.jar_path} is empty or invalid."
                 )
 
-            logger.info("MAPA JAR downloaded successfully (%d bytes)", self.jar_path.stat().st_size)
+            logger.info(
+                "CallTree.jar downloaded successfully (%d bytes)", self.jar_path.stat().st_size
+            )
             return {"success": True, "error": ""}
 
         except urllib.error.URLError as exc:
             return self._error(
-                f"Failed to download MAPA JAR from {self.jar_url}: {exc}. "
-                "Download manually and set MAPA_JAR_PATH in your .env file."
+                f"Failed to download CallTree.jar from {self.jar_url}: {exc}. "
+                "Download manually from "
+                "https://github.com/cschneid-the-elder/mapa/raw/refs/heads/master/cobol/CallTree.jar "
+                "and set MAPA_JAR_PATH in your .env file."
             )
 
     # ------------------------------------------------------------------ #
@@ -218,30 +254,35 @@ class MapaRunner:
     # ------------------------------------------------------------------ #
 
     def _build_command(
-        self, cobol_dir: Path, output_csv: Path, extra_args: list
+        self,
+        flist_path: str,
+        output_csv: Path,
+        copybook_dir: Optional[str],
+        extra_args: list,
     ) -> list:
         """
-        Build the subprocess command list.
+        Build the subprocess command list for CallTree.jar.
 
-        MAPA CLI flags (typical):
-          --input  <dir>    COBOL source directory (scanned recursively)
-          --output <path>   Output CSV file path
-          --recursive       Recurse into subdirectories (enabled by default)
-
-        Adjust flags here if your MAPA build uses different argument names.
+        CallTree.jar flags used:
+          -fileList <path>   File containing one COBOL source path per line
+          -out <path>        Output CSV path
+          -copy <dir>        Copybook directory (optional, single path)
+          -logLevel WARNING  Suppress verbose INFO output
         """
-        cmd = [
-            self.java_executable,
-        ]
+        cmd = [self.java_executable]
         if self.jvm_opts:
             cmd.extend(self.jvm_opts.split())
 
         cmd += [
             "-jar", str(self.jar_path),
-            "--input", str(cobol_dir),
-            "--output", str(output_csv),
-            "--recursive",
+            "-fileList", flist_path,
+            "-out", str(output_csv),
+            "-logLevel", "WARNING",
         ]
+
+        if copybook_dir:
+            cmd += ["-copy", copybook_dir]
+
         cmd.extend(extra_args)
         return cmd
 
@@ -258,6 +299,7 @@ class MapaRunner:
             "returncode": -1,
             "stdout": "",
             "stderr": "",
+            "row_count": 0,
             "error": msg,
         }
 
@@ -265,6 +307,6 @@ class MapaRunner:
     def _count_csv_rows(csv_path: Path) -> int:
         try:
             with csv_path.open() as f:
-                return sum(1 for _ in f) - 1  # subtract header row
+                return sum(1 for line in f if line.strip())
         except Exception:
             return -1

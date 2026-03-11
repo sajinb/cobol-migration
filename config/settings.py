@@ -35,10 +35,11 @@ class Settings:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
     # MAPA JAR — static analysis tool that generates result.csv from COBOL source
-    MAPA_JAR_PATH: str = os.getenv("MAPA_JAR_PATH", "./mapa.jar")
+    # Repo: https://github.com/cschneid-the-elder/mapa
+    MAPA_JAR_PATH: str = os.getenv("MAPA_JAR_PATH", "./CallTree.jar")
     MAPA_JAR_URL: str = os.getenv(
         "MAPA_JAR_URL",
-        "https://github.com/mapa-devs/mapa/releases/latest/download/mapa.jar",
+        "https://github.com/cschneid-the-elder/mapa/raw/refs/heads/master/cobol/CallTree.jar",
     )
     MAPA_AUTO_DOWNLOAD: bool = os.getenv("MAPA_AUTO_DOWNLOAD", "true").lower() == "true"
     MAPA_JAVA_EXECUTABLE: str = os.getenv("MAPA_JAVA_EXECUTABLE", "java")
