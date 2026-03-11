@@ -1,15 +1,17 @@
 """
 COBOL Migration Pipeline — Entry Point
 =======================================
-Run the full pipeline:
-    python main.py
+Run the full pipeline (MAPA runs automatically if result.csv is missing):
+    python main.py run
 
 Or individual phases:
-    python main.py --phase ingest
-    python main.py --phase analyse --program POLICY
-    python main.py --phase migrate --program POLICY
-    python main.py --phase validate --program POLICY
-    python main.py --phase report
+    python main.py mapa     --cobol-dir ./cobol_samples
+    python main.py ingest   --cobol-dir ./cobol_samples
+    python main.py analyse  --program POLICY
+    python main.py migrate  --program POLICY
+    python main.py validate --program POLICY --paragraph CALC-PREMIUM
+    python main.py report
+    python main.py schema
 """
 
 import argparse
@@ -26,6 +28,7 @@ from agents.migration_agent import MigrationAgent
 from agents.validation_agent import ValidationAgent
 from graph.schema import apply_schema
 from tools.neo4j_tools import Neo4jTools
+from tools.mapa_runner import MapaRunner
 from graph.queries import GraphQueries
 
 
@@ -128,6 +131,34 @@ def cmd_report(_args):
     return summary
 
 
+def cmd_mapa(args):
+    """Run the MAPA JAR against a COBOL source directory to produce result.csv."""
+    settings = get_settings()
+
+    runner = MapaRunner(
+        jar_path=args.jar or settings.MAPA_JAR_PATH,
+        jar_url=settings.MAPA_JAR_URL,
+        java_executable=settings.MAPA_JAVA_EXECUTABLE,
+        jvm_opts=args.jvm_opts or settings.MAPA_JVM_OPTS,
+        auto_download=settings.MAPA_AUTO_DOWNLOAD,
+    )
+    result = runner.run(
+        cobol_dir=args.cobol_dir or settings.COBOL_SOURCE_DIR,
+        output_csv=args.output or settings.MAPA_CSV_PATH,
+    )
+
+    if result["success"]:
+        print(f"MAPA succeeded.")
+        print(f"  CSV written to : {result['csv_path']}")
+        print(f"  Rows generated : {result.get('row_count', '?')}")
+    else:
+        print(f"MAPA FAILED: {result['error']}")
+        if result.get("stderr"):
+            print(f"  stderr: {result['stderr'][:500]}")
+        sys.exit(1)
+    return result
+
+
 def cmd_schema(_args):
     """Apply / verify Neo4j schema constraints and indexes."""
     neo4j = Neo4jTools()
@@ -154,8 +185,15 @@ def main():
     p_full.add_argument("--cobol-dir", dest="cobol_dir", help="Path to COBOL source directory")
     p_full.add_argument("--programs", help="Comma-separated program names to migrate (default: all)")
 
+    # MAPA runner — generate result.csv from COBOL sources
+    p_mapa = sub.add_parser("mapa", help="Run MAPA JAR to generate result.csv from COBOL source files")
+    p_mapa.add_argument("--jar", help="Path to mapa.jar (auto-downloaded if absent)")
+    p_mapa.add_argument("--cobol-dir", dest="cobol_dir", help="Path to COBOL source directory")
+    p_mapa.add_argument("--output", help="Output CSV path (default: settings.MAPA_CSV_PATH)")
+    p_mapa.add_argument("--jvm-opts", dest="jvm_opts", help="JVM options, e.g. '-Xmx4g'")
+
     # Individual phases
-    p_ingest = sub.add_parser("ingest", help="Ingest MAPA CSV into Neo4j")
+    p_ingest = sub.add_parser("ingest", help="Run MAPA (if needed) then ingest CSV into Neo4j")
     p_ingest.add_argument("--csv", help="Path to MAPA result.csv")
     p_ingest.add_argument("--cobol-dir", dest="cobol_dir", help="Path to COBOL source directory")
 
@@ -178,6 +216,7 @@ def main():
 
     dispatch = {
         "run": cmd_full_pipeline,
+        "mapa": cmd_mapa,
         "ingest": cmd_ingest,
         "analyse": cmd_analyse,
         "migrate": cmd_migrate,

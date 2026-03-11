@@ -1,15 +1,21 @@
 """
 Ingestion Agent
 ===============
-Role    : Reads MAPA CSV + raw COBOL files and populates Neo4j.
-Input   : MAPA result.csv path + COBOL source directory
+Role    : Runs MAPA JAR (if result.csv doesn't exist), then reads the CSV
+          + raw COBOL files and populates Neo4j.
+Input   : COBOL source directory (+ optional pre-existing MAPA CSV path)
 Output  : Populated graph nodes (Program, Paragraph, DataItem, Copybook)
 
 One instance can be spawned per program for parallel ingestion.
 The agent uses LangGraph to manage its internal state machine.
+
+Pipeline:
+  run_mapa → validate_inputs → apply_schema → ingest_csv → report
+  (run_mapa is skipped if result.csv already exists)
 """
 
 import logging
+import os
 from typing import Annotated, Dict, TypedDict
 
 from langgraph.graph import StateGraph, START, END
@@ -19,6 +25,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from config.settings import get_settings
 from tools.neo4j_tools import Neo4jTools
 from tools.file_tools import FileTools
+from tools.mapa_runner import MapaRunner
 from graph.importer import MapaCsvImporter
 from graph.schema import apply_schema
 
@@ -43,9 +50,56 @@ class IngestionState(TypedDict):
 #  Agent nodes                                                        #
 # ------------------------------------------------------------------ #
 
+def _run_mapa(state: IngestionState) -> IngestionState:
+    """
+    Run the MAPA JAR to produce result.csv from the COBOL source directory.
+    Skipped automatically if the CSV already exists.
+    """
+    if os.path.exists(state["csv_path"]):
+        logger.info("MAPA CSV already exists at %s — skipping MAPA run.", state["csv_path"])
+        return {
+            **state,
+            "status": "mapa_skipped",
+            "messages": [AIMessage(content=f"CSV already exists: {state['csv_path']}. Skipping MAPA.")],
+        }
+
+    settings = get_settings()
+    logger.info("result.csv not found — running MAPA JAR to generate it...")
+
+    runner = MapaRunner(
+        jar_path=settings.MAPA_JAR_PATH,
+        jar_url=settings.MAPA_JAR_URL,
+        java_executable=settings.MAPA_JAVA_EXECUTABLE,
+        jvm_opts=settings.MAPA_JVM_OPTS,
+        auto_download=settings.MAPA_AUTO_DOWNLOAD,
+    )
+    result = runner.run(
+        cobol_dir=state["cobol_source_dir"],
+        output_csv=state["csv_path"],
+    )
+
+    if not result["success"]:
+        return {
+            **state,
+            "status": "failed",
+            "error": result["error"],
+            "messages": [AIMessage(content=f"MAPA failed: {result['error']}")],
+        }
+
+    row_count = result.get("row_count", "?")
+    return {
+        **state,
+        "status": "mapa_done",
+        "messages": [
+            AIMessage(
+                content=f"MAPA completed. Generated {state['csv_path']} with {row_count} rows."
+            )
+        ],
+    }
+
+
 def _validate_inputs(state: IngestionState) -> IngestionState:
-    """Check that the CSV and source directory exist."""
-    import os
+    """Check that the CSV and source directory exist after MAPA run."""
     errors = []
     if not os.path.exists(state["csv_path"]):
         errors.append(f"MAPA CSV not found: {state['csv_path']}")
@@ -141,6 +195,10 @@ def _report(state: IngestionState) -> IngestionState:
 #  Graph assembly                                                     #
 # ------------------------------------------------------------------ #
 
+def _route_after_mapa(state: IngestionState) -> str:
+    return END if state["status"] == "failed" else "validate_inputs"
+
+
 def _route_after_validate(state: IngestionState) -> str:
     return END if state["status"] == "failed" else "apply_schema"
 
@@ -155,13 +213,15 @@ def _route_after_ingest(state: IngestionState) -> str:
 
 class IngestionAgent:
     """
-    LangGraph-powered agent that ingests MAPA CSV data into Neo4j.
+    LangGraph-powered agent that:
+      1. Runs MAPA JAR to generate result.csv (auto-skipped if CSV already exists)
+      2. Ingests the CSV into the Neo4j graph
 
     Usage::
 
         agent = IngestionAgent()
-        result = agent.run(csv_path="./cobol_samples/result.csv",
-                           cobol_source_dir="./cobol_samples")
+        result = agent.run(cobol_source_dir="./cobol_samples")
+        # csv_path is optional — defaults to settings.MAPA_CSV_PATH
     """
 
     def __init__(self):
@@ -170,12 +230,14 @@ class IngestionAgent:
     def _build_graph(self) -> StateGraph:
         builder = StateGraph(IngestionState)
 
+        builder.add_node("run_mapa", _run_mapa)
         builder.add_node("validate_inputs", _validate_inputs)
         builder.add_node("apply_schema", _apply_schema_node)
         builder.add_node("ingest_csv", _ingest_csv)
         builder.add_node("report", _report)
 
-        builder.add_edge(START, "validate_inputs")
+        builder.add_edge(START, "run_mapa")
+        builder.add_conditional_edges("run_mapa", _route_after_mapa)
         builder.add_conditional_edges("validate_inputs", _route_after_validate)
         builder.add_conditional_edges("apply_schema", _route_after_schema)
         builder.add_conditional_edges("ingest_csv", _route_after_ingest)

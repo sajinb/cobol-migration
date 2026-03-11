@@ -34,6 +34,16 @@ class Settings:
     OUTPUT_DIR: str = os.getenv("OUTPUT_DIR", "./output")
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # MAPA JAR — static analysis tool that generates result.csv from COBOL source
+    MAPA_JAR_PATH: str = os.getenv("MAPA_JAR_PATH", "./mapa.jar")
+    MAPA_JAR_URL: str = os.getenv(
+        "MAPA_JAR_URL",
+        "https://github.com/mapa-devs/mapa/releases/latest/download/mapa.jar",
+    )
+    MAPA_AUTO_DOWNLOAD: bool = os.getenv("MAPA_AUTO_DOWNLOAD", "true").lower() == "true"
+    MAPA_JAVA_EXECUTABLE: str = os.getenv("MAPA_JAVA_EXECUTABLE", "java")
+    MAPA_JVM_OPTS: str = os.getenv("MAPA_JVM_OPTS", "-Xmx2g")
+
     # Agent Concurrency
     MAX_PARALLEL_AGENTS: int = int(os.getenv("MAX_PARALLEL_AGENTS", "5"))
     MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))
