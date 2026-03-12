@@ -13,7 +13,7 @@ GitHub : https://github.com/cschneid-the-elder/mapa
 JAR    : https://github.com/cschneid-the-elder/mapa/raw/refs/heads/master/cobol/CallTree.jar
 
 Actual CLI invocation:
-    java -jar CallTree.jar --freeForm -fileList <file-listing-cobol-paths> -out result.csv [-copy <copybook-dir>]
+    java -jar CallTree.jar -freeForm -fileList <file-listing-cobol-paths> -out result.csv [-copy <copybook-dir>]
 
 Dependency JARs (must be co-located with CallTree.jar — the manifest Class-Path references them by name):
     antlr-4.13.2-complete.jar  — ANTLR4 runtime used by the COBOL grammar
@@ -357,7 +357,7 @@ class MapaRunner:
         Build the subprocess command list for CallTree.jar.
 
         CallTree.jar flags used:
-          --freeForm         Treat COBOL source as free-form (required; without it
+          -freeForm         Treat COBOL source as free-form (required; without it
                              the parser applies fixed-form column rules and may
                              skip entire programs → 0 rows in output)
           -fileList <path>   File containing one COBOL source path per line
@@ -372,7 +372,7 @@ class MapaRunner:
         # Use POSIX paths for -out and -copy as well (forward slashes work on all platforms)
         cmd += [
             "-jar", str(self.jar_path),
-            "--freeForm",                          # must be present — see docstring above
+            "-freeForm",                          # must be present — see docstring above
             "-fileList", flist_path,
             "-out", Path(output_csv).as_posix(),
             "-logLevel", "INFO",
