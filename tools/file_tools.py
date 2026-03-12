@@ -57,36 +57,42 @@ class FileTools:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def parse_mapa_csv(csv_path: str) -> List[Dict]:
+    def parse_mapa_csv(csv_path: str) -> Dict[str, List[List[str]]]:
         """
-        Parse the MAPA result.csv and return a list of row dicts.
+        Parse MAPA's result.csv which has *no header row*.
 
-        Expected columns (MAPA output):
-          program, paragraph, start_line, end_line,
-          performs, calls, copies, data_reads, data_writes
+        Each row is self-describing: the first column is a record-type tag.
+        Returns a dict mapping each tag to the list of raw (stripped) rows
+        of that type.
 
-        Column names are normalised to lowercase / stripped.
+        Known tags produced by CallTree.jar:
+          FILE  — source file metadata
+          PGM   — program definition
+          COPY  — COPY (copybook) statement
+          CALL  — CALL statement (inter-program call)
+          DD    — file/dataset declaration (SELECT … ASSIGN)
         """
         path = Path(csv_path)
         if not path.exists():
             logger.warning("MAPA CSV not found: %s", csv_path)
-            return []
+            return {}
 
-        rows: List[Dict] = []
+        records: Dict[str, List[List[str]]] = {}
         with path.open("r", newline="", errors="replace") as fh:
-            reader = csv.DictReader(fh)
-            for row in reader:
-                # DictReader sets key=None for extra columns beyond the header
-                # (e.g. trailing commas in MAPA CSV). Skip those entries.
-                normalised = {
-                    k.strip().lower(): (v.strip() if v else "")
-                    for k, v in row.items()
-                    if k is not None
-                }
-                rows.append(normalised)
+            reader = csv.reader(fh)
+            for raw_row in reader:
+                if not raw_row or not raw_row[0].strip():
+                    continue
+                rec_type = raw_row[0].strip().upper()
+                cleaned = [col.strip() for col in raw_row]
+                records.setdefault(rec_type, []).append(cleaned)
 
-        logger.info("Parsed %d rows from MAPA CSV: %s", len(rows), csv_path)
-        return rows
+        total = sum(len(v) for v in records.values())
+        logger.info(
+            "Parsed %d rows from MAPA CSV: %s  (record types: %s)",
+            total, csv_path, list(records.keys()),
+        )
+        return records
 
     @staticmethod
     def split_list_field(value: str, delimiter: str = ";") -> List[str]:
