@@ -6,7 +6,8 @@ Used by all agents as shared memory / state store.
 import logging
 from typing import Any, Dict, List, Optional
 
-from neo4j import GraphDatabase
+import certifi
+from neo4j import GraphDatabase, TrustCustomCAs
 from langchain_core.tools import tool
 
 from config.settings import get_settings
@@ -20,15 +21,23 @@ class Neo4jTools:
     def __init__(self):
         settings = get_settings()
 
-        # Neo4j Aura connection parameters.
-        # - keep_alive=True   prevents the OS from dropping idle TCP connections to Aura.
-        # - max_connection_lifetime limits how long a pooled connection is reused before
-        #   being re-established; Aura closes idle connections after ~30 minutes.
-        # - connection_acquisition_timeout gives a clear timeout instead of hanging.
+        # neo4j+s:// and bolt+s:// URI schemes bake TLS into the scheme and
+        # reject the trusted_certificates / encrypted driver kwargs.
+        # Normalise to the plain scheme so we can inject certifi's CA bundle
+        # explicitly — this is required when the OS CA store doesn't include
+        # Google Trust Services CAs (which sign Neo4j Aura's certificate).
+        uri = (
+            settings.NEO4J_URI
+            .replace("neo4j+s://", "neo4j://")
+            .replace("bolt+s://",  "bolt://")
+        )
+
         try:
             self._driver = GraphDatabase.driver(
-                settings.NEO4J_URI,
+                uri,
                 auth=(settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD),
+                encrypted=True,
+                trusted_certificates=TrustCustomCAs(certifi.where()),
                 keep_alive=True,
                 max_connection_lifetime=1800,       # 30 min — matches Aura idle timeout
                 max_connection_pool_size=10,
