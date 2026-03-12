@@ -84,8 +84,9 @@ class MapaCsvImporter:
             pgm_name  = row[3].upper()
             file_path = file_map.get(file_uuid, "")
 
-            # Prefer a file found on disk; fall back to the path MAPA recorded
-            cobol_file = self._find_cobol_file(pgm_name)
+            # Prefer a file found in the local source dir; fall back to the
+            # absolute path MAPA recorded (useful for audit / cross-reference).
+            cobol_file = self._find_cobol_file(pgm_name, mapa_file_path=file_path)
             resolved_path = str(cobol_file) if cobol_file else file_path
 
             self._neo4j.upsert_program(pgm_name, resolved_path)
@@ -160,18 +161,38 @@ class MapaCsvImporter:
     #  Internal helpers                                                    #
     # ------------------------------------------------------------------ #
 
-    def _find_cobol_file(self, program_name: str):
+    def _find_cobol_file(self, program_name: str, mapa_file_path: str = ""):
         """
-        Look for a COBOL source file matching the program name.
-        Tries common extensions: .cbl, .cob, .cobol (case-insensitive).
+        Look for a COBOL source file under the configured source directory.
+
+        Search order:
+          1. <source_dir>/<program_name><ext>  (e.g. MEGADEMO.cbl)
+          2. <source_dir>/<program_name.lower><ext>
+          3. <source_dir>/<basename of MAPA-recorded path>  (e.g. Sample.cbl)
+             — handles cases where the filename differs from the program name
+
+        Returns a Path on success, None if not found.
         """
         extensions = [".cbl", ".cob", ".cobol", ".CBL", ".COB", ".COBOL"]
         for ext in extensions:
-            candidate = self._source_dir / f"{program_name}{ext}"
+            for stem in (program_name, program_name.lower()):
+                candidate = self._source_dir / f"{stem}{ext}"
+                if candidate.exists():
+                    return candidate
+
+        # Fallback: look for the exact filename that MAPA recorded
+        if mapa_file_path:
+            mapa_basename = Path(mapa_file_path).name
+            candidate = self._source_dir / mapa_basename
             if candidate.exists():
                 return candidate
-            candidate_lower = self._source_dir / f"{program_name.lower()}{ext.lower()}"
+            # Also try the lowercase version
+            candidate_lower = self._source_dir / mapa_basename.lower()
             if candidate_lower.exists():
                 return candidate_lower
-        logger.debug("No source file found for program: %s", program_name)
+
+        logger.debug(
+            "No source file found for program '%s' (mapa_path=%s)",
+            program_name, mapa_file_path or "n/a",
+        )
         return None

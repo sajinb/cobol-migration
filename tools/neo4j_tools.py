@@ -76,7 +76,11 @@ class Neo4jTools:
         """Run a write query (no return value expected)."""
         params = params or {}
         with self._driver.session(database=self._database) as session:
-            session.run(cypher, params)
+            # consume() is required: auto-commit session.run() in neo4j driver v5
+            # is lazy — the server acknowledgement is not received until the result
+            # is consumed.  Without it the session can close before the write lands.
+            result = session.run(cypher, params)
+            result.consume()
 
     # ------------------------------------------------------------------ #
     #  Program / Paragraph helpers                                         #
@@ -85,12 +89,16 @@ class Neo4jTools:
     def upsert_program(self, name: str, file_path: str) -> None:
         cypher = """
         MERGE (prog:Program {name: $name})
-        SET prog.file_path = $file_path,
-            prog.status    = 'pending',
-            prog.updated   = timestamp()
+        ON CREATE SET prog.file_path = $file_path,
+                      prog.status    = 'pending',
+                      prog.created   = timestamp(),
+                      prog.updated   = timestamp()
+        ON MATCH  SET prog.file_path = CASE WHEN $file_path <> '' THEN $file_path
+                                            ELSE prog.file_path END,
+                      prog.updated   = timestamp()
         """
         self.write(cypher, {"name": name, "file_path": file_path})
-        logger.debug("Upserted Program node: %s", name)
+        logger.info("Upserted Program node: %s  file_path=%s", name, file_path or "(none)")
 
     def upsert_paragraph(
         self,
