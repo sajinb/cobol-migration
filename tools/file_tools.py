@@ -76,8 +76,13 @@ class FileTools:
         with path.open("r", newline="", errors="replace") as fh:
             reader = csv.DictReader(fh)
             for row in reader:
-                # Normalise keys
-                normalised = {k.strip().lower(): v.strip() for k, v in row.items()}
+                # DictReader sets key=None for extra columns beyond the header
+                # (e.g. trailing commas in MAPA CSV). Skip those entries.
+                normalised = {
+                    k.strip().lower(): (v.strip() if v else "")
+                    for k, v in row.items()
+                    if k is not None
+                }
                 rows.append(normalised)
 
         logger.info("Parsed %d rows from MAPA CSV: %s", len(rows), csv_path)
