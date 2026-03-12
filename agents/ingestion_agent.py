@@ -40,6 +40,7 @@ class IngestionState(TypedDict):
     messages: Annotated[list, add_messages]
     csv_path: str
     cobol_source_dir: str
+    copybook_dir: str            # optional; empty string = no -copy flag
     program_filter: str          # empty string = ingest all programs
     counts: Dict[str, int]
     status: str
@@ -76,6 +77,7 @@ def _run_mapa(state: IngestionState) -> IngestionState:
     result = runner.run(
         cobol_dir=state["cobol_source_dir"],
         output_csv=state["csv_path"],
+        copybook_dir=state["copybook_dir"] or None,
     )
 
     if not result["success"]:
@@ -249,6 +251,7 @@ class IngestionAgent:
         self,
         csv_path: str,
         cobol_source_dir: str,
+        copybook_dir: str = "",
         program_filter: str = "",
     ) -> Dict:
         """
@@ -260,6 +263,7 @@ class IngestionAgent:
             "messages": [HumanMessage(content="Start ingestion")],
             "csv_path": csv_path or settings.MAPA_CSV_PATH,
             "cobol_source_dir": cobol_source_dir or settings.COBOL_SOURCE_DIR,
+            "copybook_dir": copybook_dir or settings.MAPA_COPYBOOK_DIR,
             "program_filter": program_filter,
             "counts": {},
             "status": "starting",

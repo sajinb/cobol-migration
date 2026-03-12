@@ -44,6 +44,7 @@ class Settings:
     MAPA_AUTO_DOWNLOAD: bool = os.getenv("MAPA_AUTO_DOWNLOAD", "true").lower() == "true"
     MAPA_JAVA_EXECUTABLE: str = os.getenv("MAPA_JAVA_EXECUTABLE", "java")
     MAPA_JVM_OPTS: str = os.getenv("MAPA_JVM_OPTS", "-Xmx2g")
+    MAPA_COPYBOOK_DIR: str = os.getenv("MAPA_COPYBOOK_DIR", "")  # empty = no -copy flag passed
 
     # Agent Concurrency
     MAX_PARALLEL_AGENTS: int = int(os.getenv("MAX_PARALLEL_AGENTS", "5"))

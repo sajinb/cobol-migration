@@ -68,6 +68,7 @@ def cmd_full_pipeline(args):
     result = agent.run(
         csv_path=args.csv or "",
         cobol_source_dir=args.cobol_dir or "",
+        copybook_dir=args.copy or "",
         programs=programs,
     )
     _print_report(result.get("report", {}))
@@ -80,6 +81,7 @@ def cmd_ingest(args):
     result = agent.run(
         csv_path=args.csv or settings.MAPA_CSV_PATH,
         cobol_source_dir=args.cobol_dir or settings.COBOL_SOURCE_DIR,
+        copybook_dir=args.copy or settings.MAPA_COPYBOOK_DIR,
     )
     print(f"Ingestion status: {result.get('status')}")
     print(f"Counts: {result.get('counts', {})}")
@@ -145,6 +147,7 @@ def cmd_mapa(args):
     result = runner.run(
         cobol_dir=args.cobol_dir or settings.COBOL_SOURCE_DIR,
         output_csv=args.output or settings.MAPA_CSV_PATH,
+        copybook_dir=args.copy or settings.MAPA_COPYBOOK_DIR or None,
     )
 
     if result["success"]:
@@ -183,12 +186,14 @@ def main():
     p_full = sub.add_parser("run", help="Run the full migration pipeline")
     p_full.add_argument("--csv", help="Path to MAPA result.csv")
     p_full.add_argument("--cobol-dir", dest="cobol_dir", help="Path to COBOL source directory")
+    p_full.add_argument("--copy", help="Path to copybook directory (passed to CallTree.jar -copy)")
     p_full.add_argument("--programs", help="Comma-separated program names to migrate (default: all)")
 
     # MAPA runner — generate result.csv from COBOL sources
-    p_mapa = sub.add_parser("mapa", help="Run MAPA JAR to generate result.csv from COBOL source files")
-    p_mapa.add_argument("--jar", help="Path to mapa.jar (auto-downloaded if absent)")
+    p_mapa = sub.add_parser("mapa", help="Run CallTree.jar to generate result.csv from COBOL source files")
+    p_mapa.add_argument("--jar", help="Path to CallTree.jar (auto-downloaded if absent)")
     p_mapa.add_argument("--cobol-dir", dest="cobol_dir", help="Path to COBOL source directory")
+    p_mapa.add_argument("--copy", help="Path to copybook directory (passed to CallTree.jar -copy)")
     p_mapa.add_argument("--output", help="Output CSV path (default: settings.MAPA_CSV_PATH)")
     p_mapa.add_argument("--jvm-opts", dest="jvm_opts", help="JVM options, e.g. '-Xmx4g'")
 
@@ -196,6 +201,7 @@ def main():
     p_ingest = sub.add_parser("ingest", help="Run MAPA (if needed) then ingest CSV into Neo4j")
     p_ingest.add_argument("--csv", help="Path to MAPA result.csv")
     p_ingest.add_argument("--cobol-dir", dest="cobol_dir", help="Path to COBOL source directory")
+    p_ingest.add_argument("--copy", help="Path to copybook directory (passed to CallTree.jar -copy)")
 
     p_analyse = sub.add_parser("analyse", help="Analyse paragraphs in Neo4j")
     p_analyse.add_argument("--program", required=True, help="Program name")

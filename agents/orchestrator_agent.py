@@ -41,6 +41,7 @@ class OrchestratorState(TypedDict):
     messages: Annotated[list, add_messages]
     csv_path: str
     cobol_source_dir: str
+    copybook_dir: str                 # optional; empty = no -copy flag
     programs_to_migrate: List[str]    # empty = ALL programs
     ingestion_done: bool
     analysis_done: bool
@@ -63,6 +64,7 @@ def _run_ingestion(state: OrchestratorState) -> OrchestratorState:
     result = agent.run(
         csv_path=state["csv_path"],
         cobol_source_dir=state["cobol_source_dir"],
+        copybook_dir=state["copybook_dir"],
     )
     if result.get("status") == "failed":
         return {
@@ -330,6 +332,7 @@ class OrchestratorAgent:
         self,
         csv_path: str = "",
         cobol_source_dir: str = "",
+        copybook_dir: str = "",
         programs: Optional[List[str]] = None,
     ) -> Dict:
         """
@@ -341,6 +344,7 @@ class OrchestratorAgent:
             "messages": [HumanMessage(content="Start COBOL migration pipeline")],
             "csv_path": csv_path or settings.MAPA_CSV_PATH,
             "cobol_source_dir": cobol_source_dir or settings.COBOL_SOURCE_DIR,
+            "copybook_dir": copybook_dir or settings.MAPA_COPYBOOK_DIR,
             "programs_to_migrate": programs or [],
             "ingestion_done": False,
             "analysis_done": False,
