@@ -19,10 +19,34 @@ class Neo4jTools:
 
     def __init__(self):
         settings = get_settings()
-        self._driver = GraphDatabase.driver(
-            settings.NEO4J_URI,
-            auth=(settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD),
-        )
+
+        # Neo4j Aura connection parameters.
+        # - keep_alive=True   prevents the OS from dropping idle TCP connections to Aura.
+        # - max_connection_lifetime limits how long a pooled connection is reused before
+        #   being re-established; Aura closes idle connections after ~30 minutes.
+        # - connection_acquisition_timeout gives a clear timeout instead of hanging.
+        try:
+            self._driver = GraphDatabase.driver(
+                settings.NEO4J_URI,
+                auth=(settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD),
+                keep_alive=True,
+                max_connection_lifetime=1800,       # 30 min — matches Aura idle timeout
+                max_connection_pool_size=10,
+                connection_acquisition_timeout=30,  # seconds
+            )
+            # Fail fast with a clear message rather than letting the pool log a
+            # cryptic "Unable to retrieve routing information" on the first query.
+            self._driver.verify_connectivity()
+        except Exception as exc:
+            raise ConnectionError(
+                f"Cannot connect to Neo4j at {settings.NEO4J_URI}.\n"
+                "Common causes for Aura Free:\n"
+                "  1. Instance is PAUSED — log in to console.neo4j.io and resume it.\n"
+                "  2. Wrong credentials in .env / environment variables.\n"
+                "  3. Firewall / VPN blocking port 7687.\n"
+                f"Original error: {exc}"
+            ) from exc
+
         self._database = settings.NEO4J_DATABASE
 
     def close(self):
