@@ -45,7 +45,11 @@ class MapaCsvImporter:
             logger.warning("No records to import from: %s", csv_path)
             return {"programs": 0, "paragraphs": 0, "relationships": 0}
 
-        counts = {"programs": 0, "paragraphs": 0, "relationships": 0}
+        # Track unique program names so the final count reflects every Program
+        # node written — including those implicitly created by CALL handling.
+        seen_programs: set = set()
+        counts = {"programs": 0, "paragraphs": 0, "relationships": 0,
+                  "copybooks": 0, "calls": 0, "datasets": 0}
 
         # ------------------------------------------------------------------ #
         # Build UUID lookup tables                                            #
@@ -85,7 +89,7 @@ class MapaCsvImporter:
             resolved_path = str(cobol_file) if cobol_file else file_path
 
             self._neo4j.upsert_program(pgm_name, resolved_path)
-            counts["programs"] += 1
+            seen_programs.add(pgm_name)
             logger.debug("Program: %s  (%s)", pgm_name, resolved_path)
 
         # ------------------------------------------------------------------ #
@@ -99,6 +103,7 @@ class MapaCsvImporter:
             copybook_name = row[3].upper()
             for pgm_name in file_to_pgms.get(file_uuid, []):
                 self._neo4j.upsert_copybook(copybook_name, pgm_name)
+                counts["copybooks"] += 1
                 counts["relationships"] += 1
                 logger.debug("COPIES: %s → %s", pgm_name, copybook_name)
 
@@ -114,7 +119,9 @@ class MapaCsvImporter:
             # Ensure both program nodes exist (called program may not have
             # a PGM row if it lives in a separate un-analysed file)
             self._neo4j.upsert_program(called_pgm, "")
+            seen_programs.add(called_pgm)
             self._neo4j.add_call_relationship(calling_pgm, called_pgm)
+            counts["calls"] += 1
             counts["relationships"] += 1
             logger.debug("CALLS: %s → %s  (%s)", calling_pgm, called_pgm, row[4])
 
@@ -132,14 +139,20 @@ class MapaCsvImporter:
             if pgm_name and dd_name:
                 # Store the dataset as a DataItem so the existing schema applies
                 self._neo4j.upsert_data_item(dd_name, pgm_name, pic_type="FILE", level=0)
-                counts["relationships"] += 1
+                counts["datasets"] += 1
                 logger.debug("DD: %s.%s  (%s)", pgm_name, dd_name, row[3])
 
+        counts["programs"] = len(seen_programs)
+        # relationships = COPIES edges + CALLS edges (DD creates DataItem nodes,
+        # not relationship edges, so they are tracked separately as "datasets")
+        counts["relationships"] = counts["copybooks"] + counts["calls"]
+
         logger.info(
-            "Import complete — programs: %d, paragraphs: %d, relationships: %d",
+            "Import complete — programs: %d  copybooks: %d  calls: %d  datasets: %d",
             counts["programs"],
-            counts["paragraphs"],
-            counts["relationships"],
+            counts["copybooks"],
+            counts["calls"],
+            counts["datasets"],
         )
         return counts
 
