@@ -13,7 +13,11 @@ GitHub : https://github.com/cschneid-the-elder/mapa
 JAR    : https://github.com/cschneid-the-elder/mapa/raw/refs/heads/master/cobol/CallTree.jar
 
 Actual CLI invocation:
-    java -jar CallTree.jar -fileList <file-listing-cobol-paths> -out result.csv [-copy <copybook-dir>]
+    java -jar CallTree.jar --freeForm -fileList <file-listing-cobol-paths> -out result.csv [-copy <copybook-dir>]
+
+Dependency JARs (must be co-located with CallTree.jar — the manifest Class-Path references them by name):
+    antlr-4.13.2-complete.jar  — ANTLR4 runtime used by the COBOL grammar
+    commons-cli-1.4.jar        — Apache Commons CLI for argument parsing
 
 This module:
   1. Optionally auto-downloads CallTree.jar from GitHub if not present locally.
@@ -33,13 +37,24 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Direct download URL — raw GitHub content (not the blob page)
-MAPA_DEFAULT_JAR_URL = (
-    "https://github.com/cschneid-the-elder/mapa/raw/refs/heads/master/cobol/CallTree.jar"
-)
+# Direct download URLs — raw GitHub content (not the blob page)
+_MAPA_BASE_URL = "https://github.com/cschneid-the-elder/mapa/raw/refs/heads/master/cobol"
 
-# Default local JAR name
+MAPA_DEFAULT_JAR_URL = f"{_MAPA_BASE_URL}/CallTree.jar"
 MAPA_DEFAULT_JAR_NAME = "CallTree.jar"
+
+# These two JARs must live in the same directory as CallTree.jar.
+# The manifest Class-Path references them by name (relative paths).
+MAPA_DEPENDENCY_JARS: List[Dict] = [
+    {
+        "name": "antlr-4.13.2-complete.jar",
+        "url": f"{_MAPA_BASE_URL}/antlr-4.13.2-complete.jar",
+    },
+    {
+        "name": "commons-cli-1.4.jar",
+        "url": f"{_MAPA_BASE_URL}/commons-cli-1.4.jar",
+    },
+]
 
 
 class MapaRunner:
@@ -111,10 +126,14 @@ class MapaRunner:
         cobol_path = Path(cobol_dir)
         csv_path = Path(output_csv)
 
-        # 1. Ensure JAR is available
+        # 1. Ensure JAR + co-located dependency JARs are available
         jar_result = self._ensure_jar()
         if not jar_result["success"]:
             return {**jar_result, "csv_path": "", "returncode": -1, "stdout": "", "stderr": ""}
+
+        dep_result = self._ensure_dependencies()
+        if not dep_result["success"]:
+            return {**dep_result, "csv_path": "", "returncode": -1, "stdout": "", "stderr": ""}
 
         # 2. Collect COBOL source files
         if not cobol_path.is_dir():
@@ -276,6 +295,53 @@ class MapaRunner:
                 "and set MAPA_JAR_PATH in your .env file."
             )
 
+    def _ensure_dependencies(self) -> Dict:
+        """
+        Ensure antlr-4.13.2-complete.jar and commons-cli-1.4.jar are present
+        in the same directory as CallTree.jar.
+
+        CallTree.jar's MANIFEST.MF contains::
+
+            Class-Path: antlr-4.13.2-complete.jar commons-cli-1.4.jar
+
+        Java resolves these as paths relative to the JAR itself, so they must
+        be co-located — adding them to -cp has no effect when -jar is used.
+        """
+        jar_dir = self.jar_path.parent
+        jar_dir.mkdir(parents=True, exist_ok=True)
+
+        for dep in MAPA_DEPENDENCY_JARS:
+            dep_path = jar_dir / dep["name"]
+            if dep_path.exists():
+                logger.debug("Dependency found: %s", dep_path)
+                continue
+
+            if not self.auto_download:
+                return self._error(
+                    f"Required dependency not found: {dep_path}. "
+                    f"Download from {dep['url']} and place it next to CallTree.jar."
+                )
+
+            logger.info("Downloading dependency %s → %s", dep["name"], dep_path)
+            try:
+                urllib.request.urlretrieve(dep["url"], str(dep_path))
+            except urllib.error.URLError as exc:
+                return self._error(
+                    f"Failed to download {dep['name']}: {exc}. "
+                    f"Download manually from {dep['url']} and place it next to CallTree.jar."
+                )
+
+            if not dep_path.exists() or dep_path.stat().st_size < 1024:
+                return self._error(
+                    f"Downloaded {dep['name']} appears empty or corrupt at {dep_path}."
+                )
+
+            logger.info(
+                "%s downloaded successfully (%d bytes)", dep["name"], dep_path.stat().st_size
+            )
+
+        return {"success": True, "error": ""}
+
     # ------------------------------------------------------------------ #
     #  Command builder                                                     #
     # ------------------------------------------------------------------ #
@@ -291,10 +357,13 @@ class MapaRunner:
         Build the subprocess command list for CallTree.jar.
 
         CallTree.jar flags used:
+          --freeForm         Treat COBOL source as free-form (required; without it
+                             the parser applies fixed-form column rules and may
+                             skip entire programs → 0 rows in output)
           -fileList <path>   File containing one COBOL source path per line
           -out <path>        Output CSV path
           -copy <dir>        Copybook directory (optional, single path)
-          -logLevel WARNING  Suppress verbose INFO output
+          -logLevel INFO     Emit parse errors/warnings so failures are visible
         """
         cmd = [self.java_executable]
         if self.jvm_opts:
@@ -303,9 +372,10 @@ class MapaRunner:
         # Use POSIX paths for -out and -copy as well (forward slashes work on all platforms)
         cmd += [
             "-jar", str(self.jar_path),
+            "--freeForm",                          # must be present — see docstring above
             "-fileList", flist_path,
             "-out", Path(output_csv).as_posix(),
-            "-logLevel", "INFO",   # INFO so parse errors/warnings from the JAR are visible
+            "-logLevel", "INFO",
         ]
 
         if copybook_dir:
