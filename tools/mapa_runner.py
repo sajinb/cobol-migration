@@ -137,17 +137,24 @@ class MapaRunner:
         # 3. Ensure output directory exists
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 4. Write a temp file-list and build the command
-        #    CallTree.jar uses -fileList <path-to-file> where each line is a COBOL file path
+        # 4. Write a temp file-list and build the command.
+        #    CallTree.jar uses -fileList <path-to-file> where each line is a COBOL file path.
+        #    IMPORTANT: Use POSIX (forward-slash) paths inside the filelist even on Windows.
+        #    Java's internal file reader uses the JVM's path handling which accepts forward
+        #    slashes on all platforms, but backslashes inside a text file read by the JAR
+        #    may not be resolved correctly on non-Windows builds of the tool.
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, prefix="mapa_filelist_"
+            mode="w", suffix=".txt", delete=False, prefix="mapa_filelist_", encoding="utf-8"
         ) as flist:
-            flist.write("\n".join(str(f) for f in cobol_files))
+            posix_paths = "\n".join(f.resolve().as_posix() for f in cobol_files)
+            flist.write(posix_paths)
             flist_path = flist.name
+
+        logger.debug("Filelist contents:\n%s", posix_paths)
 
         try:
             cmd = self._build_command(flist_path, csv_path, copybook_dir, extra_args or [])
-            logger.debug("MAPA command: %s", " ".join(cmd))
+            logger.info("MAPA command: %s", " ".join(str(c) for c in cmd))
 
             # 5. Execute
             try:
@@ -155,6 +162,8 @@ class MapaRunner:
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=600,  # 10-minute timeout for large portfolios
                 )
             except FileNotFoundError:
@@ -166,6 +175,12 @@ class MapaRunner:
                 return self._error("CallTree.jar timed out after 600 seconds.")
             except Exception as exc:
                 return self._error(f"Subprocess error: {exc}")
+
+            # Always log stdout/stderr so errors from the JAR are visible
+            if proc.stdout.strip():
+                logger.info("CallTree.jar stdout:\n%s", proc.stdout.strip())
+            if proc.stderr.strip():
+                logger.warning("CallTree.jar stderr:\n%s", proc.stderr.strip())
 
             if proc.returncode != 0:
                 return {
@@ -190,6 +205,18 @@ class MapaRunner:
 
             row_count = self._count_csv_rows(csv_path)
             logger.info("CallTree.jar complete — %d rows in %s", row_count, csv_path)
+
+            if row_count == 0:
+                # Log first 500 bytes of the file to diagnose silent empty-output issues
+                try:
+                    raw = csv_path.read_bytes()
+                    logger.warning(
+                        "result.csv is empty (0 rows). File size: %d bytes. "
+                        "First 500 bytes: %r",
+                        len(raw), raw[:500],
+                    )
+                except Exception:
+                    pass
 
             return {
                 "success": True,
@@ -273,15 +300,16 @@ class MapaRunner:
         if self.jvm_opts:
             cmd.extend(self.jvm_opts.split())
 
+        # Use POSIX paths for -out and -copy as well (forward slashes work on all platforms)
         cmd += [
             "-jar", str(self.jar_path),
             "-fileList", flist_path,
-            "-out", str(output_csv),
-            "-logLevel", "WARNING",
+            "-out", Path(output_csv).as_posix(),
+            "-logLevel", "INFO",   # INFO so parse errors/warnings from the JAR are visible
         ]
 
         if copybook_dir:
-            cmd += ["-copy", copybook_dir]
+            cmd += ["-copy", Path(copybook_dir).as_posix()]
 
         cmd.extend(extra_args)
         return cmd
