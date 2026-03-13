@@ -232,8 +232,6 @@ class MigrationAgent:
         ordered = queries.get_migration_order(program)
         neo4j.close()
 
-        from graph.queries import GraphQueries  # local import to avoid circular
-
         results = []
         for row in ordered:
             if row.get("status") not in ("analysed", "failed"):
