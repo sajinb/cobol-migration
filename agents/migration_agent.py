@@ -225,9 +225,21 @@ class MigrationAgent:
         }
         return self._graph.invoke(initial)
 
-    def run_for_program(self, program: str) -> List[Dict]:
-        """Migrate all analysed paragraphs in a program (in dependency order)."""
+    def run_for_program(self, program: str, force: bool = False) -> List[Dict]:
+        """
+        Migrate all analysed paragraphs in a program (in dependency order).
+
+        Args:
+            force: When True, reset any already-migrated/validated paragraphs
+                   back to 'analysed' so they are re-processed.
+        """
         neo4j = Neo4jTools()
+        if force:
+            reset_count = neo4j.reset_paragraph_migration_status(program)
+            logger.info(
+                "Force re-run: reset %d paragraph(s) in %s back to 'analysed'",
+                reset_count, program,
+            )
         queries = GraphQueries(neo4j)
         ordered = queries.get_migration_order(program)
         neo4j.close()

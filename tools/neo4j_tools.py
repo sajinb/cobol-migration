@@ -110,10 +110,11 @@ class Neo4jTools:
     ) -> None:
         cypher = """
         MERGE (p:Paragraph {name: $name, program: $program})
+        ON CREATE SET p.status  = 'pending',
+                      p.created = timestamp()
         SET p.start_line  = $start_line,
             p.end_line    = $end_line,
             p.source_code = $source_code,
-            p.status      = 'pending',
             p.updated     = timestamp()
         WITH p
         MATCH (prog:Program {name: $program})
@@ -229,6 +230,21 @@ class Neo4jTools:
             prog.updated = timestamp()
         """
         self.write(cypher, {"name": name, "status": status})
+
+    def reset_paragraph_migration_status(self, program: str) -> int:
+        """
+        Reset all migrated/validated paragraphs for a program back to 'analysed'
+        so the Migration Agent will process them again.
+        Returns the number of paragraphs reset.
+        """
+        cypher = """
+        MATCH (p:Paragraph {program: $program})
+        WHERE p.status IN ['migrated', 'validated']
+        SET p.status = 'analysed', p.updated = timestamp()
+        RETURN count(p) AS reset_count
+        """
+        result = self.query(cypher, {"program": program})
+        return result[0]["reset_count"] if result else 0
 
     def get_pending_programs(self) -> List[Dict]:
         return self.query(

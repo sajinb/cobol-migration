@@ -101,6 +101,7 @@ def cmd_analyse(args):
 
 def cmd_migrate(args):
     agent = MigrationAgent()
+    force = getattr(args, "force", False)
     if args.paragraph:
         result = agent.run(program=args.program, paragraph=args.paragraph)
         print(f"Migration status: {result.get('status')}")
@@ -108,7 +109,7 @@ def cmd_migrate(args):
             print("\n--- Generated Java ---")
             print(result["java_code"])
     else:
-        results = agent.run_for_program(args.program)
+        results = agent.run_for_program(args.program, force=force)
         print(f"Migrated {len(results)} paragraphs in {args.program}")
     return result if args.paragraph else results
 
@@ -210,6 +211,10 @@ def main():
     p_migrate = sub.add_parser("migrate", help="Migrate paragraphs to Java")
     p_migrate.add_argument("--program", required=True, help="Program name")
     p_migrate.add_argument("--paragraph", help="Specific paragraph name (default: all)")
+    p_migrate.add_argument(
+        "--force", action="store_true",
+        help="Reset already-migrated/validated paragraphs and re-generate Java code",
+    )
 
     p_validate = sub.add_parser("validate", help="Validate generated Java code")
     p_validate.add_argument("--program", required=True, help="Program name")
