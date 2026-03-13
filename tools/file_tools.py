@@ -161,10 +161,27 @@ class FileTools:
                 body = body[:-1]
             method_lines = body.splitlines()
 
+        # Extract companion files (===COMPANION_FILE: Name.java=== … ===END_COMPANION===)
+        companion_files: Dict[str, str] = {}
+        comp_name: Optional[str] = None
+        comp_lines: List[str] = []
+        for line in code.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("// ===COMPANION_FILE:") and stripped.endswith("==="):
+                comp_name  = stripped[len("// ===COMPANION_FILE:"):].rstrip("=").strip()
+                comp_lines = []
+            elif stripped == "// ===END_COMPANION===" and comp_name:
+                companion_files[comp_name] = "\n".join(comp_lines).strip()
+                comp_name  = None
+                comp_lines = []
+            elif comp_name is not None:
+                comp_lines.append(line)
+
         return {
-            "imports": list(dict.fromkeys(i for i in imports if i)),
-            "fields":  list(dict.fromkeys(f for f in fields if f)),
-            "method":  "\n".join(method_lines).strip(),
+            "imports":         list(dict.fromkeys(i for i in imports if i)),
+            "fields":          list(dict.fromkeys(f for f in fields if f)),
+            "method":          "\n".join(method_lines).strip(),
+            "companion_files": companion_files,
         }
 
     @staticmethod
@@ -238,6 +255,37 @@ class FileTools:
         out_path.write_text(java_class, encoding="utf-8")
         logger.info("Service class written: %s", out_path)
         return str(out_path)
+
+    @staticmethod
+    def collect_companion_files(fragments: List[Dict]) -> Dict[str, str]:
+        """
+        Scan all method fragments and collect every unique companion file
+        (JPA entities, repository interfaces, DTOs) emitted by the LLM.
+
+        Returns a dict mapping filename → file content.
+        Last-write wins for duplicate filenames (same entity defined twice).
+        """
+        result: Dict[str, str] = {}
+        for frag in fragments:
+            parsed = FileTools.parse_method_fragment(frag.get("generated_code", ""))
+            result.update(parsed.get("companion_files", {}))
+        return result
+
+    @staticmethod
+    def write_companion_files(output_dir: str, companion_files: Dict[str, str]) -> List[str]:
+        """
+        Write each companion file to *output_dir*.
+        Returns the list of paths written.
+        """
+        root = Path(output_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        written: List[str] = []
+        for filename, content in companion_files.items():
+            out_path = root / filename
+            out_path.write_text(content, encoding="utf-8")
+            logger.info("Companion file written: %s", out_path)
+            written.append(str(out_path))
+        return written
 
     @staticmethod
     def write_java_output(

@@ -378,11 +378,12 @@ class CobolParser:
 
         The synthetic paragraph:
         - Has ``name = SECTION-NAME`` (e.g. ``INIT-FILES-AND-DATA``)
-        - Has ``performs = [first_paragraph_in_section]`` as its sole dependency
-        - Has empty ``source_lines`` (so the LLM receives context via performs/reads/writes)
+        - Has ``performs = [all paragraphs in section, in order]``
+        - Has a synthetic COBOL source showing only the PERFORM delegation chain
+          (prevents the LLM from inlining section-body logic instead of delegating)
         - Has ``is_section_entry = True`` to allow the importer to pre-classify it
         """
-        from collections import defaultdict, OrderedDict
+        from collections import OrderedDict
 
         # Preserve parse order: group paragraphs by section
         sections: "OrderedDict[str, List[ParagraphInfo]]" = OrderedDict()
@@ -400,9 +401,23 @@ class CobolParser:
                 section="",
                 is_section_entry=True,
             )
-            # Delegate to the first paragraph — the COBOL section entry point.
-            # Subsequent paragraphs execute via fall-through or PERFORM within INIT-1.
-            wrapper.performs = [paras[0].name]
+            # All paragraphs in section, in source order — they execute sequentially.
+            wrapper.performs = [p.name for p in paras]
+
+            # Synthetic COBOL source: shows ONLY the delegation chain.
+            # This is critical — if we leave source_lines empty, the LLM receives
+            # child paragraph COBOL source via the 'performs' context and INLINES
+            # that logic into this method instead of calling the child method.
+            # With an explicit PERFORM chain here, the LLM sees only delegation.
+            perform_stmts = "".join(
+                f"    PERFORM {p.name}.\n" for p in paras
+            )
+            wrapper.source_lines = [
+                f"{section_name} SECTION.\n",
+                f"*> Section entry — delegates to constituent paragraphs in order.\n",
+                perform_stmts,
+                f"    EXIT SECTION.\n",
+            ]
             result.paragraphs.append(wrapper)
             logger.debug("Synthetic section entry created: %s → %s", section_name, paras[0].name)
 

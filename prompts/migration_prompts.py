@@ -92,12 +92,11 @@ You receive a single COBOL paragraph with its full dependency context extracted 
 All paragraphs from the same COBOL program are assembled into ONE shared @Service class after
 migration.  Your output must therefore be a METHOD FRAGMENT — not a standalone class file.
 
-Use EXACTLY these three section markers (verbatim) in your output:
+Use EXACTLY these section markers (verbatim) in your output:
 
 // ===IMPORTS===
 import java.math.BigDecimal;
-import java.math.RoundingMode;
-// … every import the method body needs, one per line …
+// … every import the method body or companion files need, one per line …
 
 // ===FIELDS===
 @Autowired
@@ -113,14 +112,27 @@ public <ReturnType> <methodName>(<params>) {
     // full implementation — no TODO placeholders
 }
 
+// ===COMPANION_FILE: ClassName.java===
+package com.migration.programname;
+// Complete Java source for a companion file (e.g. @Entity, JpaRepository interface, DTO).
+// Include this block ONLY when a new class/interface must be created as a separate file.
+// Do NOT generate companion files for standard Spring / JDK classes.
+// ===END_COMPANION===
+
 COBOL → Java mapping rules:
+- WORKING-STORAGE vars         → private service fields (class-level, NOT method params)
+                                  Reason: WORKING-STORAGE persists for the program lifetime,
+                                  mapping to instance state in a Spring @Service singleton.
 - LINKAGE SECTION items        → method parameters (String, BigDecimal, int …)
-- WORKING-STORAGE shared vars  → explicit method parameters or a return value object
-- PERFORM <paragraph-name>     → Java method call camelCase(<paragraph-name>)()
-- PERFORM <SECTION-NAME>       → Java method call camelCase(<SECTION-NAME>)()
-                                  (all methods live in the same service class — direct call)
+- PERFORM <paragraph-name>     → Direct method call: camelCase(paragraphName)()
+                                  If the ALREADY MIGRATED Java signature is shown below,
+                                  call it with EXACTLY those parameters.
+- PERFORM <SECTION-NAME>       → Direct method call: camelCase(sectionName)()
+                                  (all methods live in the same @Service class)
 - CALL 'EXTERNAL-PGM'          → @Autowired service call / @FeignClient
-- EXEC SQL                     → @Autowired JpaRepository<Entity,Long> method call
+- EXEC SQL / file I/O (VSAM)   → @Autowired JpaRepository<Entity,Long>
+                                  Create a companion file for the @Entity and the Repository
+                                  interface if they don't already exist.
 - EXEC CICS                    → @Transactional / Spring MVC pattern
 - PIC 9(n)                     → int / long
 - PIC 9(n)V9(d)                → BigDecimal  (always HALF_UP rounding)
@@ -133,12 +145,32 @@ COBOL → Java mapping rules:
 
 FORBIDDEN:
 - Do NOT wrap the output in a class declaration
-- Do NOT generate initFilesAndData(), openFiles(), initWorkingStorage() stubs
+- Do NOT generate inner stub or placeholder methods for PERFORMS targets —
+  every PERFORM target is already (or will be) a real method in this class
 - Do NOT use markdown fences (``` or ```)
-- Do NOT add prose outside the three marker sections
+- Do NOT add prose outside the marker sections
 
-Return ONLY the three marker sections and their content.
+Return ONLY the marker sections and their content.
 """
+
+
+def _extract_java_signature(generated_code: str) -> str:
+    """
+    Extract the public/private method signature line(s) from already-migrated Java code.
+    Returns a concise signature string for use in the migration prompt context.
+    """
+    import re
+    if not generated_code:
+        return ""
+    # Strip markers and fences
+    code = generated_code.replace("```java", "").replace("```", "")
+    # Find the first method signature: optional access modifier + return type + name + params
+    m = re.search(
+        r'((?:public|private|protected)\s+(?:static\s+)?[\w<>\[\],\s]+\s+\w+\s*\([^)]*\))',
+        code,
+        re.MULTILINE,
+    )
+    return m.group(1).strip() if m else ""
 
 
 def build_migration_prompt(
@@ -154,9 +186,21 @@ def build_migration_prompt(
     shared_state_items: List[str],
     migration_notes: str = "",
 ) -> str:
+    # For each PERFORM target, show the Java signature if already migrated,
+    # otherwise fall back to the COBOL source so the LLM has context.
+    def _performs_entry(p: Dict) -> str:
+        name = p.get("name", "")
+        if not name:
+            return ""
+        gen_code = p.get("generated_code", "") or ""
+        sig = _extract_java_signature(gen_code) if gen_code else ""
+        if sig:
+            return f"  - {name}  [ALREADY MIGRATED — Java signature: {sig}]"
+        cobol = (p.get("source_code", "") or "")[:300]
+        return f"  - {name}: {cobol}" if cobol else f"  - {name}"
+
     performs_text = "\n".join(
-        f"  - {p['name']}: {p.get('source_code', '')[:300]}"
-        for p in performs if p.get("name")
+        e for p in performs if (e := _performs_entry(p))
     ) or "  (none)"
 
     reads_text = "\n".join(
@@ -169,7 +213,7 @@ def build_migration_prompt(
         for w in writes if w.get("name")
     ) or "  (none)"
 
-    calls_text = "\n".join(f"  - {c}" for c in external_calls) or "  (none)"
+    calls_text  = "\n".join(f"  - {c}" for c in external_calls) or "  (none)"
     tables_text = "\n".join(f"  - {t}" for t in sql_tables) or "  (none)"
     shared_text = "\n".join(f"  - {s}" for s in shared_state_items) or "  (none)"
 
@@ -177,7 +221,7 @@ def build_migration_prompt(
     package_name = program.lower().replace("-", "")
     class_name   = "".join(p.capitalize() for p in program.replace("-", "_").split("_")) + "Service"
 
-    return f"""Migrate the following COBOL paragraph to a complete Spring Boot source file.
+    return f"""Migrate the following COBOL paragraph to a Spring Boot method fragment.
 
 Target class   : {class_name}
 Target package : com.migration.{package_name}
@@ -189,8 +233,10 @@ Intent         : {intent or '(not analysed yet)'}
 === COBOL SOURCE ===
 {source_code or '(source not available)'}
 
-=== PERFORMS (child paragraph source — already migrated) ===
+=== PERFORMS (child paragraphs — call as methods in the same class) ===
 {performs_text}
+NOTE: If a child shows [ALREADY MIGRATED], call it using EXACTLY that Java signature.
+Do NOT re-implement its logic here.
 
 === DATA ITEMS READ (WORKING-STORAGE) ===
 {reads_text}
@@ -200,15 +246,15 @@ Intent         : {intent or '(not analysed yet)'}
 
 === SHARED STATE (items crossing paragraph boundaries) ===
 {shared_text}
-(These must become explicit method parameters or return values in Java)
+(Map these to private service fields — NOT method parameters)
 
 === EXTERNAL PROGRAM CALLS ===
 {calls_text}
 
-=== DB2 TABLES ACCESSED ===
+=== DB2 TABLES / FILES ACCESSED ===
 {tables_text}
 
-Generate the Java method now.
+Generate the method fragment now.
 """
 
 

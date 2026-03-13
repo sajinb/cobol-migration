@@ -67,8 +67,9 @@ class GraphQueries:
             p.intent                           AS intent,
             p.complexity                       AS complexity,
             collect(DISTINCT {
-                name:        child.name,
-                source_code: child.source_code
+                name:           child.name,
+                source_code:    child.source_code,
+                generated_code: child.generated_code
             })                                 AS performs,
             collect(DISTINCT {
                 name:     r.name,

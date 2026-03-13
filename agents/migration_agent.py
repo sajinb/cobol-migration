@@ -253,10 +253,11 @@ class MigrationAgent:
     def _assemble_and_write_service(self, program: str) -> str:
         """
         Query Neo4j for all migrated/validated paragraph code fragments,
-        assemble them into a single Spring Boot @Service class, and write
-        the file to OUTPUT_DIR.
+        assemble them into a single Spring Boot @Service class, write
+        companion files (JPA entities, repositories, DTOs), and return
+        the service class path.
 
-        Returns the path of the written file (empty string on failure).
+        Returns the path of the written service file (empty string on failure).
         """
         try:
             neo4j = Neo4jTools()
@@ -268,8 +269,19 @@ class MigrationAgent:
                 logger.warning("No migrated code found for program %s — skipping assembly", program)
                 return ""
 
+            # Write the main @Service class
             java_class = FileTools.assemble_service_class(program, fragments)
             out_path   = FileTools.write_service_class(settings.OUTPUT_DIR, program, java_class)
+
+            # Write companion files (entities, repositories, DTOs)
+            companions = FileTools.collect_companion_files(fragments)
+            if companions:
+                written = FileTools.write_companion_files(settings.OUTPUT_DIR, companions)
+                logger.info(
+                    "Wrote %d companion file(s) for %s: %s",
+                    len(written), program, [Path(p).name for p in written],
+                )
+
             logger.info(
                 "Assembled %d fragment(s) for %s → %s",
                 len(fragments), program, out_path,
