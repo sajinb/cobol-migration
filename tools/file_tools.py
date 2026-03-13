@@ -4,6 +4,7 @@ File tools for reading COBOL source files and MAPA CSV output.
 
 import csv
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
 
@@ -110,16 +111,146 @@ class FileTools:
     # ------------------------------------------------------------------ #
 
     @staticmethod
+    def parse_method_fragment(code: str) -> Dict:
+        """
+        Parse LLM output that uses the structured fragment format:
+            // ===IMPORTS===
+            // ===FIELDS===
+            // ===METHOD===
+
+        Falls back to extracting imports + body from a legacy complete-class
+        response when markers are absent.
+
+        Returns a dict with keys 'imports' (List[str]), 'fields' (List[str]),
+        'method' (str).
+        """
+        # Strip markdown fences if present
+        code = code.replace("```java", "").replace("```", "")
+
+        imports: List[str] = []
+        fields: List[str] = []
+        method_lines: List[str] = []
+        section = None
+
+        for line in code.splitlines():
+            stripped = line.strip()
+            if stripped == "// ===IMPORTS===":
+                section = "imports"
+            elif stripped == "// ===FIELDS===":
+                section = "fields"
+            elif stripped == "// ===METHOD===":
+                section = "method"
+            elif section == "imports" and stripped.startswith("import "):
+                imports.append(stripped)
+            elif section == "fields" and stripped:
+                fields.append(stripped)
+            elif section == "method":
+                method_lines.append(line)
+
+        # Fallback: no markers — extract from a complete class response
+        if not method_lines:
+            for line in code.splitlines():
+                if line.strip().startswith("import "):
+                    imports.append(line.strip())
+            body = re.sub(
+                r'^.*?public\s+class\s+\w+[^{]*\{', '', code,
+                count=1, flags=re.DOTALL,
+            )
+            body = body.rstrip()
+            if body.endswith("}"):
+                body = body[:-1]
+            method_lines = body.splitlines()
+
+        return {
+            "imports": list(dict.fromkeys(i for i in imports if i)),
+            "fields":  list(dict.fromkeys(f for f in fields if f)),
+            "method":  "\n".join(method_lines).strip(),
+        }
+
+    @staticmethod
+    def assemble_service_class(program: str, fragments: List[Dict]) -> str:
+        """
+        Combine per-paragraph method fragments into one @Service class.
+
+        Each entry in *fragments* must have a 'generated_code' key containing
+        the raw LLM output (structured or legacy format).
+
+        Returns the full Java source text for <ProgramCamelCase>Service.java.
+        """
+        package_name = program.lower().replace("-", "")
+        class_name   = _to_camel_case(program) + "Service"
+
+        base_imports = {
+            "import lombok.extern.slf4j.Slf4j;",
+            "import org.springframework.beans.factory.annotation.Autowired;",
+            "import org.springframework.stereotype.Service;",
+            "import org.springframework.transaction.annotation.Transactional;",
+        }
+        all_imports: Dict[str, None] = {i: None for i in base_imports}
+        all_fields:  Dict[str, str]  = {}   # var_name → full declaration line
+        methods: List[str] = []
+
+        for frag in fragments:
+            parsed = FileTools.parse_method_fragment(frag.get("generated_code", ""))
+            for imp in parsed["imports"]:
+                all_imports[imp] = None
+            for field in parsed["fields"]:
+                # Key by last token before the semicolon (the variable name)
+                tokens = field.rstrip(";").split()
+                var_name = tokens[-1] if tokens else field
+                all_fields[var_name] = field
+            if parsed["method"]:
+                methods.append(parsed["method"])
+
+        lines: List[str] = [
+            f"package com.migration.{package_name};",
+            "",
+        ]
+        lines += sorted(all_imports.keys())
+        lines += [
+            "",
+            "@Slf4j",
+            "@Service",
+            f"public class {class_name} {{",
+            "",
+        ]
+        for field_decl in all_fields.values():
+            lines.append(f"    {field_decl}")
+        if all_fields:
+            lines.append("")
+        for method in methods:
+            for mline in method.splitlines():
+                lines.append(f"    {mline}" if mline.strip() else "")
+            lines.append("")
+        lines.append("}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def write_service_class(output_dir: str, program: str, java_class: str) -> str:
+        """
+        Write an assembled service class to *output_dir*/<ProgramCamelCase>Service.java.
+        Returns the path of the written file.
+        """
+        class_name = _to_camel_case(program) + "Service"
+        out_path   = Path(output_dir) / f"{class_name}.java"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(java_class, encoding="utf-8")
+        logger.info("Service class written: %s", out_path)
+        return str(out_path)
+
+    @staticmethod
     def write_java_output(
         output_dir: str, program: str, paragraph: str, java_code: str
     ) -> str:
         """
-        Write generated Java code to the output directory.
+        Write a single paragraph's raw LLM output to the output directory.
+        Retained for debug / legacy use — prefer write_service_class for
+        the assembled single-class output.
         Returns the path of the written file.
         """
         root = Path(output_dir) / program
         root.mkdir(parents=True, exist_ok=True)
-        # Convert COBOL naming (hyphens) to Java file naming (CamelCase)
         class_name = _to_camel_case(paragraph)
         out_path = root / f"{class_name}.java"
         out_path.write_text(java_code, encoding="utf-8")

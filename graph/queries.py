@@ -168,3 +168,21 @@ class GraphQueries:
         """
         rows = self._neo4j.query(cypher)
         return {row["status"]: row["count"] for row in rows}
+
+    def get_migrated_code(self, program: str) -> List[Dict]:
+        """
+        Return migrated/validated paragraphs in dependency order (leaves first)
+        so that the assembled class lists helper methods before their callers.
+
+        Each row has 'name' and 'generated_code'.
+        """
+        cypher = """
+        MATCH (p:Paragraph {program: $program})
+        WHERE p.status IN ['migrated', 'validated']
+          AND p.generated_code IS NOT NULL
+        OPTIONAL MATCH (p)-[:PERFORMS*]->(dep:Paragraph)
+        WITH p, count(dep) AS depth
+        ORDER BY depth ASC
+        RETURN p.name AS name, p.generated_code AS generated_code
+        """
+        return self._neo4j.query(cypher, {"program": program})

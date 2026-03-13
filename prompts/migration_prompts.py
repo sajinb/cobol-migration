@@ -89,45 +89,36 @@ Return JSON matching this schema:
 MIGRATION_SYSTEM_PROMPT = """You are an expert COBOL to Java Spring Boot migration engineer.
 You receive a single COBOL paragraph with its full dependency context extracted from a Neo4j graph.
 
-Generate a COMPLETE, compilable Spring Boot source file.
-Do NOT generate skeleton or stub methods — every method must be fully implemented.
+All paragraphs from the same COBOL program are assembled into ONE shared @Service class after
+migration.  Your output must therefore be a METHOD FRAGMENT — not a standalone class file.
 
-Required output structure (replace angle-bracket placeholders with real values):
-─────────────────────────────────────────────────────────────────────────────────
-package com.migration.<program_lower>;
+Use EXACTLY these three section markers (verbatim) in your output:
 
+// ===IMPORTS===
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-// … include every import the method body actually needs …
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+// … every import the method body needs, one per line …
 
-@Slf4j
-@Service
-public class <ProgramCamelCase>Service {
+// ===FIELDS===
+@Autowired
+private SomeRepository someRepository;
+// … every @Autowired / @Value field declaration the method needs …
 
-    // @Autowired repository / service fields required by this method, e.g.:
-    // @Autowired private PolicyRepository policyRepository;
-
-    /**
-     * Javadoc — describe what this COBOL paragraph does.
-     * <p>Original COBOL: paragraph {@code <PARA-NAME>} in program {@code <PROGRAM>}.
-     */
-    public <ReturnType> <methodName>(<params>) {
-        // full implementation — no TODO placeholders
-    }
+// ===METHOD===
+/**
+ * Javadoc — describe what this COBOL paragraph does.
+ * <p>Original COBOL: {@code <PARA-NAME>} in program {@code <PROGRAM>}.
+ */
+public <ReturnType> <methodName>(<params>) {
+    // full implementation — no TODO placeholders
 }
-─────────────────────────────────────────────────────────────────────────────────
 
 COBOL → Java mapping rules:
 - LINKAGE SECTION items        → method parameters (String, BigDecimal, int …)
 - WORKING-STORAGE shared vars  → explicit method parameters or a return value object
 - PERFORM <paragraph-name>     → Java method call camelCase(<paragraph-name>)()
 - PERFORM <SECTION-NAME>       → Java method call camelCase(<SECTION-NAME>)()
-                                  (section-wrapper methods are generated as separate
-                                   paragraphs — do NOT inline their body here)
+                                  (all methods live in the same service class — direct call)
 - CALL 'EXTERNAL-PGM'          → @Autowired service call / @FeignClient
 - EXEC SQL                     → @Autowired JpaRepository<Entity,Long> method call
 - EXEC CICS                    → @Transactional / Spring MVC pattern
@@ -140,13 +131,13 @@ COBOL → Java mapping rules:
 - OCCURS DEPENDING ON          → List<T>
 - 88-level condition name      → boolean constant or enum
 
-FORBIDDEN — do NOT generate any of these:
-- initFilesAndData(), openFiles(), initWorkingStorage(), or similar void init stubs
-- Unimplemented TODO method bodies
-- Markdown code fences (``` or ```)
-- Any prose explanation outside the Java source
+FORBIDDEN:
+- Do NOT wrap the output in a class declaration
+- Do NOT generate initFilesAndData(), openFiles(), initWorkingStorage() stubs
+- Do NOT use markdown fences (``` or ```)
+- Do NOT add prose outside the three marker sections
 
-Return ONLY the valid Java source code for the complete class file.
+Return ONLY the three marker sections and their content.
 """
 
 

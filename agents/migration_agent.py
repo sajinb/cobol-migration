@@ -24,6 +24,8 @@ from tools.llm_tools import LLMTools
 from graph.queries import GraphQueries
 from prompts.migration_prompts import MIGRATION_SYSTEM_PROMPT, build_migration_prompt
 
+settings = get_settings()
+
 logger = logging.getLogger(__name__)
 
 
@@ -132,20 +134,12 @@ def _store_generated_code(state: MigrationState) -> MigrationState:
     if state["status"] == "failed":
         return state
     try:
-        settings = get_settings()
         neo4j = Neo4jTools()
         neo4j.update_paragraph_status(
             name=state["paragraph"],
             program=state["program"],
             status="migrated",
             generated_code=state["java_code"],
-        )
-        # Optionally write to file system
-        FileTools.write_java_output(
-            output_dir=settings.OUTPUT_DIR,
-            program=state["program"],
-            paragraph=state["paragraph"],
-            java_code=state["java_code"],
         )
         neo4j.close()
         return {
@@ -227,7 +221,8 @@ class MigrationAgent:
 
     def run_for_program(self, program: str, force: bool = False) -> List[Dict]:
         """
-        Migrate all analysed paragraphs in a program (in dependency order).
+        Migrate all analysed paragraphs in a program (in dependency order),
+        then assemble all migrated fragments into a single @Service class file.
 
         Args:
             force: When True, reset any already-migrated/validated paragraphs
@@ -250,4 +245,36 @@ class MigrationAgent:
                 continue
             result = self.run(program=program, paragraph=row["name"])
             results.append(result)
+
+        # Assemble all migrated fragments into one @Service class
+        self._assemble_and_write_service(program)
         return results
+
+    def _assemble_and_write_service(self, program: str) -> str:
+        """
+        Query Neo4j for all migrated/validated paragraph code fragments,
+        assemble them into a single Spring Boot @Service class, and write
+        the file to OUTPUT_DIR.
+
+        Returns the path of the written file (empty string on failure).
+        """
+        try:
+            neo4j = Neo4jTools()
+            queries = GraphQueries(neo4j)
+            fragments = queries.get_migrated_code(program)
+            neo4j.close()
+
+            if not fragments:
+                logger.warning("No migrated code found for program %s — skipping assembly", program)
+                return ""
+
+            java_class = FileTools.assemble_service_class(program, fragments)
+            out_path   = FileTools.write_service_class(settings.OUTPUT_DIR, program, java_class)
+            logger.info(
+                "Assembled %d fragment(s) for %s → %s",
+                len(fragments), program, out_path,
+            )
+            return out_path
+        except Exception as exc:
+            logger.exception("Assembly failed for %s: %s", program, exc)
+            return ""

@@ -163,6 +163,17 @@ def cmd_mapa(args):
     return result
 
 
+def cmd_assemble(args):
+    """Assemble all migrated paragraph fragments for a program into a single @Service class."""
+    agent = MigrationAgent()
+    out_path = agent._assemble_and_write_service(args.program)
+    if out_path:
+        print(f"Service class written: {out_path}")
+    else:
+        print(f"No migrated code found for {args.program}.")
+    return out_path
+
+
 def cmd_schema(_args):
     """Apply / verify Neo4j schema constraints and indexes."""
     neo4j = Neo4jTools()
@@ -220,6 +231,9 @@ def main():
     p_validate.add_argument("--program", required=True, help="Program name")
     p_validate.add_argument("--paragraph", required=True, help="Paragraph name")
 
+    p_assemble = sub.add_parser("assemble", help="Assemble migrated fragments into a single @Service class file")
+    p_assemble.add_argument("--program", required=True, help="Program name")
+
     sub.add_parser("report", help="Print migration status report from Neo4j")
     sub.add_parser("schema", help="Apply Neo4j schema constraints and indexes")
 
@@ -232,6 +246,7 @@ def main():
         "analyse": cmd_analyse,
         "migrate": cmd_migrate,
         "validate": cmd_validate,
+        "assemble": cmd_assemble,
         "report": cmd_report,
         "schema": cmd_schema,
     }
