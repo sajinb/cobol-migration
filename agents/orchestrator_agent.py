@@ -207,6 +207,7 @@ def _run_validation(state: OrchestratorState) -> OrchestratorState:
     val_agent = ValidationAgent()
     mig_agent = MigrationAgent()
     new_retry_queue = []
+    programs_needing_reassembly: set = set()
 
     for row in migrated:
         program = row["program"]
@@ -225,12 +226,23 @@ def _run_validation(state: OrchestratorState) -> OrchestratorState:
                 failure_reason=reason,
                 retry_count=1,
             )
-            if retry_result.get("status") != "migrated":
+            if retry_result.get("status") == "migrated":
+                # Re-assemble the service file for this program after the retry
+                programs_needing_reassembly.add(program)
+            else:
                 new_retry_queue.append({
                     "program": program,
                     "paragraph": paragraph,
                     "reason": reason,
                 })
+
+    # Re-assemble service files for programs where retries produced new code
+    for program in programs_needing_reassembly:
+        try:
+            mig_agent._assemble_and_write_service(program)
+            logger.info("[Orchestrator] Re-assembled service for %s after retry.", program)
+        except Exception as exc:
+            logger.error("[Orchestrator] Re-assembly failed for %s: %s", program, exc)
 
     return {
         **state,
@@ -254,11 +266,17 @@ def _generate_report(state: OrchestratorState) -> OrchestratorState:
     circular = queries.get_circular_call_chains()
     neo4j.close()
 
+    explicitly_requested = state.get("programs_to_migrate") or []
+    total_programs = (
+        len(explicitly_requested)
+        if explicitly_requested
+        else summary.get("programs", 0)
+    )
     report = {
         "status_counts": summary,
         "circular_call_chains": circular,
         "retry_queue": state.get("retry_queue", []),
-        "total_programs": len(state.get("programs_to_migrate", [])),
+        "total_programs": total_programs,
     }
 
     msg = (

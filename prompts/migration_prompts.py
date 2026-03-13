@@ -304,11 +304,16 @@ Paragraph : {para_name}
 === GENERATED JAVA ===
 {java_code or '(no code generated)'}
 
-=== EXPECTED PERFORM CALLS (must appear as method calls) ===
+=== EXPECTED PERFORM CALLS (must appear as direct method calls — no stub bodies) ===
 {performs_text}
 
-=== EXPECTED DATA ITEMS (must appear as parameters or locals) ===
+=== EXPECTED DATA ITEMS (must appear as service fields in ===FIELDS===, method parameters, or local variables) ===
 {items_text}
+
+=== COMPANION FILES ===
+If the COBOL accesses DB2 tables or VSAM files, expect a ===COMPANION_FILE: ...=== block
+containing a JPA @Entity and/or JpaRepository interface. Flag as ERROR if tables/files
+are used but no companion file was generated.
 
 Return JSON matching this schema:
 {VALIDATION_RESPONSE_SCHEMA}
