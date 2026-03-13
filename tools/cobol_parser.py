@@ -41,6 +41,8 @@ class ParagraphInfo:
     calls: List[str] = field(default_factory=list)     # CALLed external programs
     reads: List[str] = field(default_factory=list)     # DataItems read (MOVE … FROM)
     writes: List[str] = field(default_factory=list)    # DataItems written (MOVE … TO / COMPUTE)
+    section: str = ""                # COBOL SECTION this paragraph belongs to
+    is_section_entry: bool = False   # True for synthetic section-wrapper paragraphs
 
     @property
     def source_code(self) -> str:
@@ -101,9 +103,13 @@ class CobolParser:
 
     # ── Compiled patterns ────────────────────────────────────────────── #
 
-    # Paragraph / section header: a COBOL name followed ONLY by a period.
+    # Paragraph header: a COBOL name followed ONLY by a period (no keywords after it).
     # The regex is applied against the stripped statement text.
     _PARA_HEADER = re.compile(r'^([A-Z0-9][A-Z0-9-]*)\s*\.\s*$', re.IGNORECASE)
+
+    # PROCEDURE DIVISION section header: NAME SECTION.
+    # Must be matched separately because _PARA_HEADER only matches "NAME." forms.
+    _SECT_HEADER = re.compile(r'^([A-Z0-9][A-Z0-9-]+)\s+SECTION\s*\.\s*$', re.IGNORECASE)
 
     # Exclude lines that look like paragraph headers but are not.
     _DIV_OR_SECT = re.compile(
@@ -227,6 +233,7 @@ class CobolParser:
         in_working_storage = False
         in_procedure_div   = False
         current_para: Optional[ParagraphInfo] = None
+        current_section: str = ""   # tracks the current PROCEDURE DIVISION section name
 
         def close_para(end_line: int) -> None:
             nonlocal current_para
@@ -325,7 +332,16 @@ class CobolParser:
             if not in_procedure_div:
                 continue
 
-            # Paragraph / section header?
+            # PROCEDURE DIVISION section header? (e.g. "INIT-FILES-AND-DATA SECTION.")
+            # Must be checked before _PARA_HEADER because _PARA_HEADER only matches
+            # "NAME." forms and would miss "NAME SECTION." entirely.
+            sec_m = self._SECT_HEADER.match(stmt)
+            if sec_m:
+                close_para(lineno - 1)
+                current_section = sec_m.group(1).upper()
+                continue
+
+            # Paragraph header? (a COBOL name followed only by a period)
             m = self._PARA_HEADER.match(stmt)
             if m and not self._DIV_OR_SECT.search(stmt):
                 close_para(lineno - 1)
@@ -334,6 +350,7 @@ class CobolParser:
                     start_line=lineno,
                     end_line=lineno,
                     source_lines=[raw_line],
+                    section=current_section,
                 )
                 continue
 
@@ -343,7 +360,51 @@ class CobolParser:
                 self._extract_stmt(stmt, current_para)
 
         close_para(len(lines))
+        self._create_section_entries(result)
         return result
+
+    # ── Section-wrapper synthesis ─────────────────────────────────────── #
+
+    @staticmethod
+    def _create_section_entries(result: CobolParseResult) -> None:
+        """
+        Create synthetic section-entry ParagraphInfos for each PROCEDURE DIVISION
+        SECTION encountered during parsing.
+
+        In COBOL, ``PERFORM SECTION-NAME`` executes every paragraph in the named
+        section sequentially through EXIT SECTION.  Without a matching Paragraph
+        node the graph would contain a dangling PERFORMS reference and the
+        Migration Agent would generate a call to a non-existent Java method.
+
+        The synthetic paragraph:
+        - Has ``name = SECTION-NAME`` (e.g. ``INIT-FILES-AND-DATA``)
+        - Has ``performs = [first_paragraph_in_section]`` as its sole dependency
+        - Has empty ``source_lines`` (so the LLM receives context via performs/reads/writes)
+        - Has ``is_section_entry = True`` to allow the importer to pre-classify it
+        """
+        from collections import defaultdict, OrderedDict
+
+        # Preserve parse order: group paragraphs by section
+        sections: "OrderedDict[str, List[ParagraphInfo]]" = OrderedDict()
+        for para in result.paragraphs:
+            if para.section:
+                sections.setdefault(para.section, []).append(para)
+
+        for section_name, paras in sections.items():
+            if not paras:
+                continue
+            wrapper = ParagraphInfo(
+                name=section_name,
+                start_line=paras[0].start_line,
+                end_line=paras[-1].end_line,
+                section="",
+                is_section_entry=True,
+            )
+            # Delegate to the first paragraph — the COBOL section entry point.
+            # Subsequent paragraphs execute via fall-through or PERFORM within INIT-1.
+            wrapper.performs = [paras[0].name]
+            result.paragraphs.append(wrapper)
+            logger.debug("Synthetic section entry created: %s → %s", section_name, paras[0].name)
 
     # ── Relationship extraction ──────────────────────────────────────── #
 

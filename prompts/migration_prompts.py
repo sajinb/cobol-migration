@@ -87,20 +87,66 @@ Return JSON matching this schema:
 # ================================================================== #
 
 MIGRATION_SYSTEM_PROMPT = """You are an expert COBOL to Java Spring Boot migration engineer.
-You receive a single COBOL paragraph with full dependency context extracted from a Neo4j graph.
-Your task is to generate a single Java method (inside a @Service class) that faithfully
-replicates the business logic.
+You receive a single COBOL paragraph with its full dependency context extracted from a Neo4j graph.
 
-Rules:
-- Replace WORKING-STORAGE shared variables with explicit method parameters or return values.
-- Map PERFORM calls to Java method calls (assume methods exist in the same service class).
-- Map CALL to external programs to @FeignClient / service method calls.
-- Map EXEC SQL to JPA repository method calls.
-- Map EXEC CICS to @Transactional annotations or Spring MVC patterns.
-- Use BigDecimal for PIC 9(n)V9(d) types.
-- Use String for PIC X(n) types.
-- Add a Javadoc comment describing the original COBOL paragraph.
-- Return ONLY the Java method code — no class wrapper, no imports.
+Generate a COMPLETE, compilable Spring Boot source file.
+Do NOT generate skeleton or stub methods — every method must be fully implemented.
+
+Required output structure (replace angle-bracket placeholders with real values):
+─────────────────────────────────────────────────────────────────────────────────
+package com.migration.<program_lower>;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+// … include every import the method body actually needs …
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Slf4j
+@Service
+public class <ProgramCamelCase>Service {
+
+    // @Autowired repository / service fields required by this method, e.g.:
+    // @Autowired private PolicyRepository policyRepository;
+
+    /**
+     * Javadoc — describe what this COBOL paragraph does.
+     * <p>Original COBOL: paragraph {@code <PARA-NAME>} in program {@code <PROGRAM>}.
+     */
+    public <ReturnType> <methodName>(<params>) {
+        // full implementation — no TODO placeholders
+    }
+}
+─────────────────────────────────────────────────────────────────────────────────
+
+COBOL → Java mapping rules:
+- LINKAGE SECTION items        → method parameters (String, BigDecimal, int …)
+- WORKING-STORAGE shared vars  → explicit method parameters or a return value object
+- PERFORM <paragraph-name>     → Java method call camelCase(<paragraph-name>)()
+- PERFORM <SECTION-NAME>       → Java method call camelCase(<SECTION-NAME>)()
+                                  (section-wrapper methods are generated as separate
+                                   paragraphs — do NOT inline their body here)
+- CALL 'EXTERNAL-PGM'          → @Autowired service call / @FeignClient
+- EXEC SQL                     → @Autowired JpaRepository<Entity,Long> method call
+- EXEC CICS                    → @Transactional / Spring MVC pattern
+- PIC 9(n)                     → int / long
+- PIC 9(n)V9(d)                → BigDecimal  (always HALF_UP rounding)
+- PIC X(n)                     → String
+- COMP / COMP-4                → int / long
+- COMP-3 / packed-decimal      → BigDecimal
+- OCCURS n TIMES               → T[] array (0-based index in Java)
+- OCCURS DEPENDING ON          → List<T>
+- 88-level condition name      → boolean constant or enum
+
+FORBIDDEN — do NOT generate any of these:
+- initFilesAndData(), openFiles(), initWorkingStorage(), or similar void init stubs
+- Unimplemented TODO method bodies
+- Markdown code fences (``` or ```)
+- Any prose explanation outside the Java source
+
+Return ONLY the valid Java source code for the complete class file.
 """
 
 
@@ -136,11 +182,17 @@ def build_migration_prompt(
     tables_text = "\n".join(f"  - {t}" for t in sql_tables) or "  (none)"
     shared_text = "\n".join(f"  - {s}" for s in shared_state_items) or "  (none)"
 
-    return f"""Migrate the following COBOL paragraph to a Java Spring Boot service method.
+    # Derive Spring Boot naming from the COBOL program name
+    package_name = program.lower().replace("-", "")
+    class_name   = "".join(p.capitalize() for p in program.replace("-", "_").split("_")) + "Service"
 
-Program   : {program}
-Paragraph : {para_name}
-Intent    : {intent or '(not analysed yet)'}
+    return f"""Migrate the following COBOL paragraph to a complete Spring Boot source file.
+
+Target class   : {class_name}
+Target package : com.migration.{package_name}
+Program        : {program}
+Paragraph      : {para_name}
+Intent         : {intent or '(not analysed yet)'}
 {f'Notes     : {migration_notes}' if migration_notes else ''}
 
 === COBOL SOURCE ===

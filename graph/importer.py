@@ -226,6 +226,25 @@ class MapaCsvImporter:
                 )
                 extra["paragraphs"] += 1
 
+                # Section-wrapper paragraphs are synthetic (no source to analyse).
+                # Pre-classify them as 'analysed' with a canned intent so the
+                # Migration Agent can process them immediately without an LLM call.
+                if para.is_section_entry and para.performs:
+                    self._neo4j.update_paragraph_status(
+                        name=para.name,
+                        program=pgm_name,
+                        status="analysed",
+                        complexity="LOW",
+                        intent=(
+                            f"COBOL SECTION entry point — delegates to "
+                            f"{para.performs[0]} (section body)"
+                        ),
+                    )
+                    logger.debug(
+                        "Section entry pre-classified as analysed: %s.%s → %s",
+                        pgm_name, para.name, para.performs[0],
+                    )
+
                 # PERFORMS (intra-program only)
                 for target in para.performs:
                     if target in para_names:
