@@ -39,10 +39,6 @@ def _configure_logging():
         format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
-    # Neo4j sends schema-hint WARNINGs (e.g. "relationship type does not exist")
-    # when OPTIONAL MATCH runs against an empty graph.  These are not actionable
-    # before data is loaded; suppress them so they don't pollute the run log.
-    logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 
 def _print_report(report: dict):

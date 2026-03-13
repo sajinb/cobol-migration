@@ -42,10 +42,6 @@ class Neo4jTools:
                 max_connection_lifetime=1800,       # 30 min — matches Aura idle timeout
                 max_connection_pool_size=10,
                 connection_acquisition_timeout=30,  # seconds
-                # Suppress server-side hint notifications (e.g. "relationship type
-                # does not exist yet") that fire on OPTIONAL MATCH against an empty
-                # graph.  Real errors are still surfaced via exceptions.
-                notifications_min_severity="OFF",
             )
             # Fail fast with a clear message rather than letting the pool log a
             # cryptic "Unable to retrieve routing information" on the first query.

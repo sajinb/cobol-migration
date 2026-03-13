@@ -50,10 +50,30 @@ SCHEMA_INDEXES = [
     "CREATE INDEX para_program IF NOT EXISTS FOR (p:Paragraph) ON (p.program)",
 ]
 
+# ------------------------------------------------------------------ #
+#  Relationship indexes                                               #
+#                                                                     #
+#  Creating a relationship index registers the relationship type      #
+#  token in Neo4j's type store even before any actual relationships   #
+#  exist.  This prevents GQL status 01N51 ("relationship type does   #
+#  not exist") notifications that fire on OPTIONAL MATCH queries      #
+#  when the graph is still empty.                                     #
+# ------------------------------------------------------------------ #
+SCHEMA_REL_INDEXES = [
+    "CREATE INDEX rel_has_paragraph  IF NOT EXISTS FOR ()-[r:HAS_PARAGRAPH]-()  ON (r.order)",
+    "CREATE INDEX rel_has_data_item  IF NOT EXISTS FOR ()-[r:HAS_DATA_ITEM]-()  ON (r.level)",
+    "CREATE INDEX rel_performs       IF NOT EXISTS FOR ()-[r:PERFORMS]-()        ON (r.via)",
+    "CREATE INDEX rel_calls          IF NOT EXISTS FOR ()-[r:CALLS]-()           ON (r.call_type)",
+    "CREATE INDEX rel_copies         IF NOT EXISTS FOR ()-[r:COPIES]-()          ON (r.version)",
+    "CREATE INDEX rel_reads          IF NOT EXISTS FOR ()-[r:READS]-()           ON (r.access_type)",
+    "CREATE INDEX rel_writes         IF NOT EXISTS FOR ()-[r:WRITES]-()          ON (r.access_type)",
+    "CREATE INDEX rel_executes_sql   IF NOT EXISTS FOR ()-[r:EXECUTES_SQL]-()    ON (r.sql_type)",
+]
+
 
 def apply_schema(neo4j: "Neo4jTools") -> None:
     """Apply all constraints and indexes to the connected Neo4j instance."""
-    for stmt in SCHEMA_CONSTRAINTS + SCHEMA_INDEXES:
+    for stmt in SCHEMA_CONSTRAINTS + SCHEMA_INDEXES + SCHEMA_REL_INDEXES:
         try:
             neo4j.write(stmt)
             logger.debug("Applied schema statement: %s", stmt[:60])
