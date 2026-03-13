@@ -122,7 +122,7 @@ class FileTools:
         # Convert COBOL naming (hyphens) to Java file naming (CamelCase)
         class_name = _to_camel_case(paragraph)
         out_path = root / f"{class_name}.java"
-        out_path.write_text(java_code)
+        out_path.write_text(java_code, encoding="utf-8")
         logger.info("Java output written: %s", out_path)
         return str(out_path)
 
