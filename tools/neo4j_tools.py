@@ -33,7 +33,7 @@ class Neo4jTools:
             .replace("bolt://",    "")
             .rstrip("/")
         )
-        self._base_url = f"https://{host}:7473"
+        self._base_url = f"https://{host}"  # port 443 — works through corporate firewalls
         self._database = settings.NEO4J_DATABASE
         self._auth = (settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD)
         self._commit_url = f"{self._base_url}/db/{self._database}/tx/commit"
@@ -53,7 +53,7 @@ class Neo4jTools:
                 "Common causes for Aura Free:\n"
                 "  1. Instance is PAUSED — log in to console.neo4j.io and resume it.\n"
                 "  2. Wrong credentials in .env / environment variables.\n"
-                "  3. Firewall / VPN blocking port 7473.\n"
+                "  3. Firewall / VPN blocking port 443 (unlikely but possible).\n"
                 f"Original error: {exc}"
             ) from exc
 
