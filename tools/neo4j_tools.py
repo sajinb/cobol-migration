@@ -21,16 +21,14 @@ class Neo4jTools:
     def __init__(self):
         settings = get_settings()
 
-        # Use bolt:// (direct connection) instead of neo4j:// (cluster routing)
-        # to avoid the routing-table lookup that fails behind corporate
-        # firewalls / VPNs even when port 7687 is open.
-        # We strip the +s suffix so we can inject certifi's CA bundle via
-        # trusted_certificates — required when the OS CA store doesn't include
+        # neo4j+s:// and bolt+s:// URI schemes bake TLS into the scheme and
+        # reject the trusted_certificates / encrypted driver kwargs.
+        # Normalise to the plain scheme so we can inject certifi's CA bundle
+        # explicitly — this is required when the OS CA store doesn't include
         # Google Trust Services CAs (which sign Neo4j Aura's certificate).
         uri = (
             settings.NEO4J_URI
-            .replace("neo4j+s://", "bolt://")
-            .replace("neo4j://",   "bolt://")
+            .replace("neo4j+s://", "neo4j://")
             .replace("bolt+s://",  "bolt://")
         )
 
