@@ -44,26 +44,35 @@ class Neo4jTools:
         self._auth = (settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD)
         self._commit_url = f"{self._base_url}/db/{self._database}/tx/commit"
 
-        # Verify connectivity on startup.
+        # Verify connectivity on startup by running a trivial Cypher query.
+        # Using the tx/commit endpoint (not /db/<name>) because Neo4j Aura does
+        # not expose raw discovery endpoints — only the transactional HTTP API.
         # verify=False: corporate SSL-inspection proxies inject a company-signed
         # certificate that Python's CA bundle doesn't trust; safe here because
         # we are connecting to a known Neo4j Aura endpoint.
         try:
-            resp = requests.get(
-                f"{self._base_url}/db/{self._database}",
+            resp = requests.post(
+                self._commit_url,
+                json={"statements": [{"statement": "RETURN 1"}]},
                 auth=self._auth,
+                headers={"Accept": "application/json;charset=UTF-8",
+                         "Content-Type": "application/json"},
                 timeout=15,
                 verify=False,
             )
-            if resp.status_code not in (200, 404):
-                resp.raise_for_status()
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("errors"):
+                raise RuntimeError(body["errors"])
         except Exception as exc:
             raise ConnectionError(
                 f"Cannot connect to Neo4j at {self._base_url}.\n"
                 "Common causes for Aura Free:\n"
                 "  1. Instance is PAUSED — log in to console.neo4j.io and resume it.\n"
                 "  2. Wrong credentials in .env / environment variables.\n"
-                "  3. Firewall / VPN blocking port 443 (unlikely but possible).\n"
+                "     (Shell env vars override .env — run: unset NEO4J_URI NEO4J_PASSWORD)\n"
+                "  3. Firewall / VPN blocking port 443.\n"
+                f"Attempted commit URL: {self._commit_url}\n"
                 f"Original error: {exc}"
             ) from exc
 
