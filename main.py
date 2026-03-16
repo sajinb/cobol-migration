@@ -9,6 +9,8 @@ Or individual phases:
     python main.py ingest   --cobol-dir ./cobol_samples
     python main.py analyse  --program POLICY
     python main.py migrate  --program POLICY
+    python main.py validate                                   # all migrated paragraphs
+    python main.py validate --program POLICY                  # all paragraphs in program
     python main.py validate --program POLICY --paragraph CALC-PREMIUM
     python main.py report
     python main.py schema
@@ -116,13 +118,42 @@ def cmd_migrate(args):
 
 def cmd_validate(args):
     agent = ValidationAgent()
-    result = agent.run(program=args.program, paragraph=args.paragraph)
-    verdict = result.get("verdict", {})
-    passed = result.get("passed", False)
-    print(f"Validation: {'PASSED' if passed else 'FAILED'}")
-    if not passed:
-        print(f"Issues: {json.dumps(verdict.get('issues', []), indent=2)}")
-    return result
+    program = getattr(args, "program", None)
+    paragraph = getattr(args, "paragraph", None)
+
+    if paragraph:
+        # Single paragraph
+        result = agent.run(program=program, paragraph=paragraph)
+        passed = result.get("passed", False)
+        print(f"Validation: {'PASSED' if passed else 'FAILED'}")
+        if not passed:
+            print(f"Issues: {json.dumps(result.get('verdict', {}).get('issues', []), indent=2)}")
+        return result
+
+    # Batch: all migrated paragraphs (optionally filtered by program)
+    neo4j = Neo4jTools()
+    rows = neo4j.get_paragraphs_by_status("migrated")
+    neo4j.close()
+    if program:
+        rows = [r for r in rows if r["program"] == program]
+
+    passed_count = failed_count = 0
+    failures = []
+    for row in rows:
+        r = agent.run(program=row["program"], paragraph=row["name"])
+        if r.get("passed"):
+            passed_count += 1
+        else:
+            failed_count += 1
+            failures.append({
+                "paragraph": f"{row['program']}.{row['name']}",
+                "reason": r.get("failure_reason", ""),
+            })
+
+    print(f"\nValidation complete — PASSED: {passed_count}, FAILED: {failed_count}")
+    for f in failures:
+        print(f"  FAILED  {f['paragraph']}: {f['reason']}")
+    return {"passed": failed_count == 0, "passed_count": passed_count, "failed_count": failed_count}
 
 
 def cmd_report(_args):
@@ -228,8 +259,8 @@ def main():
     )
 
     p_validate = sub.add_parser("validate", help="Validate generated Java code")
-    p_validate.add_argument("--program", required=True, help="Program name")
-    p_validate.add_argument("--paragraph", required=True, help="Paragraph name")
+    p_validate.add_argument("--program", help="Program name (default: all programs)")
+    p_validate.add_argument("--paragraph", help="Paragraph name (default: all migrated paragraphs)")
 
     p_assemble = sub.add_parser("assemble", help="Assemble migrated fragments into a single @Service class file")
     p_assemble.add_argument("--program", required=True, help="Program name")
