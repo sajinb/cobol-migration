@@ -1,14 +1,16 @@
 """
 Neo4j tools for reading and writing graph data.
 Used by all agents as shared memory / state store.
+
+Connection strategy: uses the Neo4j Transactional Cypher HTTP API over HTTPS
+(port 7473) instead of the Bolt binary protocol (port 7687).  This avoids
+firewall/VPN issues that block non-standard ports while keeping full TLS.
 """
 
 import logging
 from typing import Any, Dict, List, Optional
 
-import certifi
-from neo4j import GraphDatabase, TrustCustomCAs
-from langchain_core.tools import tool
+import requests
 
 from config.settings import get_settings
 
@@ -16,71 +18,87 @@ logger = logging.getLogger(__name__)
 
 
 class Neo4jTools:
-    """Wrapper around Neo4j driver providing agent-ready read/write operations."""
+    """Wrapper around Neo4j HTTP API providing agent-ready read/write operations."""
 
     def __init__(self):
         settings = get_settings()
 
-        # neo4j+s:// and bolt+s:// URI schemes bake TLS into the scheme and
-        # reject the trusted_certificates / encrypted driver kwargs.
-        # Normalise to the plain scheme so we can inject certifi's CA bundle
-        # explicitly — this is required when the OS CA store doesn't include
-        # Google Trust Services CAs (which sign Neo4j Aura's certificate).
-        uri = (
+        # Derive the HTTPS base URL from the bolt URI.
+        # neo4j+s://71cd3c29.databases.neo4j.io  →  https://71cd3c29.databases.neo4j.io:7473
+        host = (
             settings.NEO4J_URI
-            .replace("neo4j+s://", "neo4j://")
-            .replace("bolt+s://",  "bolt://")
+            .replace("neo4j+s://", "")
+            .replace("neo4j://",   "")
+            .replace("bolt+s://",  "")
+            .replace("bolt://",    "")
+            .rstrip("/")
         )
+        self._base_url = f"https://{host}:7473"
+        self._database = settings.NEO4J_DATABASE
+        self._auth = (settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD)
+        self._commit_url = f"{self._base_url}/db/{self._database}/tx/commit"
 
+        # Verify connectivity on startup.
         try:
-            self._driver = GraphDatabase.driver(
-                uri,
-                auth=(settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD),
-                encrypted=True,
-                trusted_certificates=TrustCustomCAs(certifi.where()),
-                keep_alive=True,
-                max_connection_lifetime=1800,       # 30 min — matches Aura idle timeout
-                max_connection_pool_size=10,
-                connection_acquisition_timeout=30,  # seconds
+            resp = requests.get(
+                f"{self._base_url}/db/{self._database}",
+                auth=self._auth,
+                timeout=15,
             )
-            # Fail fast with a clear message rather than letting the pool log a
-            # cryptic "Unable to retrieve routing information" on the first query.
-            self._driver.verify_connectivity()
+            if resp.status_code not in (200, 404):
+                resp.raise_for_status()
         except Exception as exc:
             raise ConnectionError(
-                f"Cannot connect to Neo4j at {settings.NEO4J_URI}.\n"
+                f"Cannot connect to Neo4j at {self._base_url}.\n"
                 "Common causes for Aura Free:\n"
                 "  1. Instance is PAUSED — log in to console.neo4j.io and resume it.\n"
                 "  2. Wrong credentials in .env / environment variables.\n"
-                "  3. Firewall / VPN blocking port 7687.\n"
+                "  3. Firewall / VPN blocking port 7473.\n"
                 f"Original error: {exc}"
             ) from exc
 
-        self._database = settings.NEO4J_DATABASE
-
     def close(self):
-        self._driver.close()
+        pass  # HTTP is stateless — nothing to close.
 
     # ------------------------------------------------------------------ #
-    #  Generic query                                                       #
+    #  Internal HTTP helper                                                #
+    # ------------------------------------------------------------------ #
+
+    def _run(self, cypher: str, params: Optional[Dict[str, Any]] = None) -> List[Dict]:
+        """POST a single Cypher statement via the HTTP API and return row dicts."""
+        params = params or {}
+        payload = {"statements": [{"statement": cypher, "parameters": params}]}
+        resp = requests.post(
+            self._commit_url,
+            json=payload,
+            auth=self._auth,
+            headers={"Accept": "application/json;charset=UTF-8",
+                     "Content-Type": "application/json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("errors"):
+            raise RuntimeError(f"Neo4j HTTP error: {body['errors']}")
+
+        results = body.get("results", [{}])[0]
+        columns = results.get("columns", [])
+        rows = []
+        for entry in results.get("data", []):
+            rows.append(dict(zip(columns, entry["row"])))
+        return rows
+
+    # ------------------------------------------------------------------ #
+    #  Generic query / write                                               #
     # ------------------------------------------------------------------ #
 
     def query(self, cypher: str, params: Optional[Dict[str, Any]] = None) -> List[Dict]:
         """Run a read query and return a list of record dicts."""
-        params = params or {}
-        with self._driver.session(database=self._database) as session:
-            result = session.run(cypher, params)
-            return [dict(record) for record in result]
+        return self._run(cypher, params)
 
     def write(self, cypher: str, params: Optional[Dict[str, Any]] = None) -> None:
         """Run a write query (no return value expected)."""
-        params = params or {}
-        with self._driver.session(database=self._database) as session:
-            # consume() is required: auto-commit session.run() in neo4j driver v5
-            # is lazy — the server acknowledgement is not received until the result
-            # is consumed.  Without it the session can close before the write lands.
-            result = session.run(cypher, params)
-            result.consume()
+        self._run(cypher, params)
 
     # ------------------------------------------------------------------ #
     #  Program / Paragraph helpers                                         #

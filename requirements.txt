@@ -5,9 +5,9 @@ langchain-core>=0.3.0
 langchain-anthropic>=0.3.0
 langchain-openai>=0.2.0      # optional fallback
 
-# Neo4j
-neo4j>=5.20.0
-certifi>=2024.1.1        # CA bundle for Aura's GCP-issued TLS cert
+# Neo4j — connect via HTTP API (port 7473) instead of Bolt (port 7687)
+# to avoid firewall/VPN blocks on non-standard ports.
+requests>=2.32.0
 
 # Environment / config
 python-dotenv>=1.0.0
