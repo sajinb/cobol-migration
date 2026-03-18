@@ -13,13 +13,13 @@ load_dotenv()
 class Settings:
     """Central configuration for all agents and tools."""
 
-    # Neo4j Aura
-    NEO4J_URI: str = os.getenv("NEO4J_URI", "neo4j+s://71cd3c29.databases.neo4j.io")
+    # Neo4j — works for both on-prem localhost and Aura cloud
+    NEO4J_URI: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     NEO4J_USERNAME: str = os.getenv("NEO4J_USERNAME", "neo4j")
-    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "TRb0PAdYEQBR4ZRArOwWIfaaPqejcqneJuWQfOVQti4")
+    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD", "neo4j")
     NEO4J_DATABASE: str = os.getenv("NEO4J_DATABASE", "neo4j")
-    AURA_INSTANCEID: str = os.getenv("AURA_INSTANCEID", "71cd3c29")
-    AURA_INSTANCENAME: str = os.getenv("AURA_INSTANCENAME", "Free instance")
+    # HTTP API port: 7474 for local, 443 for Aura (auto-detected if not set)
+    NEO4J_HTTP_PORT: int = int(os.getenv("NEO4J_HTTP_PORT", "0"))  # 0 = auto
 
     # LLM
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")

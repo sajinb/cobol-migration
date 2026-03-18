@@ -2,9 +2,11 @@
 Neo4j tools for reading and writing graph data.
 Used by all agents as shared memory / state store.
 
-Connection strategy: uses the Neo4j Transactional Cypher HTTP API over HTTPS
-(port 7473) instead of the Bolt binary protocol (port 7687).  This avoids
-firewall/VPN issues that block non-standard ports while keeping full TLS.
+Connection strategy: uses the Neo4j Transactional Cypher HTTP API.
+- On-prem / local: http://localhost:7474  (NEO4J_URI=bolt://localhost:7687)
+- Neo4j Aura cloud: https://<host>:443    (NEO4J_URI=neo4j+s://<host>)
+
+The HTTP port is auto-detected from the URI scheme; override with NEO4J_HTTP_PORT.
 """
 
 import logging
@@ -13,14 +15,41 @@ from typing import Any, Dict, List, Optional
 import urllib3
 import requests
 
-# Corporate SSL-inspection proxies re-sign certificates with a company CA that
-# Python's certifi bundle doesn't trust.  Suppress the resulting noise since we
-# are connecting to a known, trusted endpoint (Neo4j Aura).
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Aura cloud uses corporate SSL inspection in some environments; suppress the
+# warning only when we are actually disabling verification (see __init__).
+_AURA_SCHEMES = {"neo4j+s", "bolt+s"}
+
+
+def _build_http_base(uri: str, http_port_override: int) -> tuple[str, bool]:
+    """
+    Return (base_url, use_tls) derived from the bolt/neo4j URI.
+
+    Examples
+    --------
+    bolt://localhost:7687      → http://localhost:7474,  tls=False
+    bolt+s://host.io          → https://host.io,         tls=True
+    neo4j+s://host.io         → https://host.io,         tls=True
+    neo4j://localhost:7687    → http://localhost:7474,   tls=False
+    """
+    scheme, _, rest = uri.partition("://")
+    # strip any bolt port appended to the host
+    host = rest.split(":")[0].rstrip("/")
+    tls = scheme in _AURA_SCHEMES
+
+    if http_port_override:
+        port = http_port_override
+    elif tls:
+        port = 443          # Neo4j Aura — HTTPS on 443
+    else:
+        port = 7474         # on-prem — HTTP on 7474
+
+    proto = "https" if tls else "http"
+    base = f"{proto}://{host}:{port}" if port not in (80, 443) else f"{proto}://{host}"
+    return base, tls
 
 
 class Neo4jTools:
@@ -29,27 +58,24 @@ class Neo4jTools:
     def __init__(self):
         settings = get_settings()
 
-        # Derive the HTTPS base URL from the bolt URI.
-        # neo4j+s://71cd3c29.databases.neo4j.io  →  https://71cd3c29.databases.neo4j.io:7473
-        host = (
-            settings.NEO4J_URI
-            .replace("neo4j+s://", "")
-            .replace("neo4j://",   "")
-            .replace("bolt+s://",  "")
-            .replace("bolt://",    "")
-            .rstrip("/")
+        self._base_url, self._tls = _build_http_base(
+            settings.NEO4J_URI, settings.NEO4J_HTTP_PORT
         )
-        self._base_url = f"https://{host}"  # port 443 — works through corporate firewalls
-        self._database = settings.NEO4J_DATABASE
-        self._auth = (settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD)
+        self._database  = settings.NEO4J_DATABASE
+        self._auth      = (settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD)
         self._commit_url = f"{self._base_url}/db/{self._database}/tx/commit"
 
-        # Verify connectivity on startup by running a trivial Cypher query.
-        # Using the tx/commit endpoint (not /db/<name>) because Neo4j Aura does
-        # not expose raw discovery endpoints — only the transactional HTTP API.
-        # verify=False: corporate SSL-inspection proxies inject a company-signed
-        # certificate that Python's CA bundle doesn't trust; safe here because
-        # we are connecting to a known Neo4j Aura endpoint.
+        # For Aura over a corporate SSL-inspection proxy the proxy re-signs the
+        # certificate with a company CA not in Python's bundle — skip verify.
+        # For on-prem HTTP there is no TLS at all so verify is irrelevant.
+        self._verify = False if self._tls else True
+
+        if self._tls and not self._verify:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        logger.info("Neo4j HTTP endpoint: %s  (tls=%s)", self._commit_url, self._tls)
+
+        # Verify connectivity on startup.
         try:
             resp = requests.post(
                 self._commit_url,
@@ -58,7 +84,7 @@ class Neo4jTools:
                 headers={"Accept": "application/json;charset=UTF-8",
                          "Content-Type": "application/json"},
                 timeout=15,
-                verify=False,
+                verify=self._verify,
             )
             resp.raise_for_status()
             body = resp.json()
@@ -66,13 +92,12 @@ class Neo4jTools:
                 raise RuntimeError(body["errors"])
         except Exception as exc:
             raise ConnectionError(
-                f"Cannot connect to Neo4j at {self._base_url}.\n"
-                "Common causes for Aura Free:\n"
-                "  1. Instance is PAUSED — log in to console.neo4j.io and resume it.\n"
-                "  2. Wrong credentials in .env / environment variables.\n"
-                "     (Shell env vars override .env — run: unset NEO4J_URI NEO4J_PASSWORD)\n"
-                "  3. Firewall / VPN blocking port 443.\n"
-                f"Attempted commit URL: {self._commit_url}\n"
+                f"Cannot connect to Neo4j at {self._commit_url}.\n"
+                "Troubleshooting:\n"
+                "  On-prem : confirm Neo4j is running and bolt://localhost:7687 is reachable.\n"
+                "            Default HTTP API is http://localhost:7474 — set NEO4J_HTTP_PORT=7474.\n"
+                "  Aura    : instance may be PAUSED — resume at console.neo4j.io.\n"
+                "  Credentials: check NEO4J_USERNAME / NEO4J_PASSWORD in .env.\n"
                 f"Original error: {exc}"
             ) from exc
 
@@ -94,7 +119,7 @@ class Neo4jTools:
             headers={"Accept": "application/json;charset=UTF-8",
                      "Content-Type": "application/json"},
             timeout=30,
-            verify=False,
+            verify=self._verify,
         )
         resp.raise_for_status()
         body = resp.json()
