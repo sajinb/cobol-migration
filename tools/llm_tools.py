@@ -4,6 +4,7 @@ Provides a single interface used by all agents.
 """
 
 import logging
+import time
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -13,16 +14,40 @@ from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Anthropic API keys are always "sk-ant-api03-…" or "sk-ant-…"
+_ANTHROPIC_KEY_PREFIX = "sk-ant-"
+# OpenAI keys start with "sk-"
+_OPENAI_KEY_PREFIX = "sk-"
+
+
+def _validate_key(key: str, provider: str, prefix: str) -> None:
+    """Raise EnvironmentError if *key* looks like a placeholder or is too short."""
+    if not key or "your_" in key.lower() or "_here" in key.lower():
+        raise EnvironmentError(
+            f"{provider} API key looks like a placeholder value. "
+            f"Set a real key in your .env file or environment."
+        )
+    if not key.startswith(prefix):
+        logger.warning(
+            "%s key does not start with expected prefix '%s' — "
+            "verify the key is correct.",
+            provider, prefix,
+        )
+
 
 def build_llm(model_override: Optional[str] = None) -> BaseChatModel:
     """
     Build and return the configured LLM instance.
     Prefers Anthropic Claude; falls back to OpenAI if ANTHROPIC_API_KEY is absent.
+
+    SDK-level retries are disabled (max_retries=0) so that LLMTools.call_with_retry
+    has full control over back-off and error reporting.
     """
     settings = get_settings()
     model = model_override or settings.LLM_MODEL
 
     if settings.ANTHROPIC_API_KEY:
+        _validate_key(settings.ANTHROPIC_API_KEY, "Anthropic", _ANTHROPIC_KEY_PREFIX)
         from langchain_anthropic import ChatAnthropic
         logger.info("Using Anthropic model: %s", model)
         return ChatAnthropic(
@@ -30,9 +55,11 @@ def build_llm(model_override: Optional[str] = None) -> BaseChatModel:
             api_key=settings.ANTHROPIC_API_KEY,
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
+            max_retries=0,  # let call_with_retry handle retries
         )
 
     if settings.OPENAI_API_KEY:
+        _validate_key(settings.OPENAI_API_KEY, "OpenAI", _OPENAI_KEY_PREFIX)
         from langchain_openai import ChatOpenAI
         logger.info("Using OpenAI model: %s", model)
         return ChatOpenAI(
@@ -40,6 +67,7 @@ def build_llm(model_override: Optional[str] = None) -> BaseChatModel:
             api_key=settings.OPENAI_API_KEY,
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
+            max_retries=0,  # let call_with_retry handle retries
         )
 
     raise EnvironmentError(
@@ -68,8 +96,6 @@ class LLMTools:
         self, system_prompt: str, human_prompt: str, max_retries: int = 3
     ) -> str:
         """Call LLM with simple retry logic on transient errors."""
-        import time
-
         settings = get_settings()
         delay = settings.RETRY_DELAY_SECONDS
         last_error: Optional[Exception] = None
@@ -79,10 +105,17 @@ class LLMTools:
                 return self.call(system_prompt, human_prompt)
             except Exception as exc:
                 last_error = exc
+                # Surface the actual error class + message so it's actionable
                 logger.warning(
-                    "LLM call attempt %d/%d failed: %s", attempt, max_retries, exc
+                    "LLM call attempt %d/%d failed [%s]: %s",
+                    attempt, max_retries,
+                    type(exc).__name__,
+                    exc,
                 )
                 if attempt < max_retries:
-                    time.sleep(delay * (2 ** (attempt - 1)))
+                    sleep_for = delay * (2 ** (attempt - 1))
+                    logger.info("Retrying in %ss…", sleep_for)
+                    time.sleep(sleep_for)
 
         raise RuntimeError(f"LLM call failed after {max_retries} retries") from last_error
+
