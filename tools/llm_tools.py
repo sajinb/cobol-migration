@@ -75,17 +75,31 @@ def build_llm(model_override: Optional[str] = None) -> BaseChatModel:
 
     if settings.ANTHROPIC_API_KEY:
         _validate_key(settings.ANTHROPIC_API_KEY, "Anthropic", _ANTHROPIC_KEY_PREFIX)
+        import anthropic
         from langchain_anthropic import ChatAnthropic
         logger.info("Using Anthropic model: %s", model)
-        return ChatAnthropic(
+        llm = ChatAnthropic(
             model=model,
             api_key=settings.ANTHROPIC_API_KEY,
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
             max_retries=0,  # let call_with_retry handle retries
-            http_client=httpx.Client(verify=verify) if verify is not True else None,
-            http_async_client=httpx.AsyncClient(verify=verify) if verify is not True else None,
         )
+        # Inject a custom httpx client for SSL override without relying on
+        # ChatAnthropic's http_client kwarg (not recognised in all versions —
+        # it would land in model_kwargs and be forwarded to messages.create()).
+        if verify is not True:
+            llm._client = anthropic.Anthropic(
+                api_key=settings.ANTHROPIC_API_KEY,
+                http_client=httpx.Client(verify=verify),
+                max_retries=0,
+            )
+            llm._async_client = anthropic.AsyncAnthropic(
+                api_key=settings.ANTHROPIC_API_KEY,
+                http_client=httpx.AsyncClient(verify=verify),
+                max_retries=0,
+            )
+        return llm
 
     if settings.OPENAI_API_KEY:
         _validate_key(settings.OPENAI_API_KEY, "OpenAI", _OPENAI_KEY_PREFIX)
