@@ -3,53 +3,32 @@ Neo4j tools for reading and writing graph data.
 Used by all agents as shared memory / state store.
 
 Connection strategy: uses the Neo4j Transactional Cypher HTTP API.
-- On-prem / local: http://localhost:7474  (NEO4J_URI=bolt://localhost:7687)
-- Neo4j Aura cloud: https://<host>:443    (NEO4J_URI=neo4j+s://<host>)
-
-The HTTP port is auto-detected from the URI scheme; override with NEO4J_HTTP_PORT.
+Local Neo4j: http://localhost:7474  (NEO4J_URI=bolt://localhost:7687)
 """
 
 import logging
 from typing import Any, Dict, List, Optional
 
-import urllib3
 import requests
 
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Aura cloud uses corporate SSL inspection in some environments; suppress the
-# warning only when we are actually disabling verification (see __init__).
-_AURA_SCHEMES = {"neo4j+s", "bolt+s"}
 
-
-def _build_http_base(uri: str, http_port_override: int) -> tuple[str, bool]:
+def _build_http_base(uri: str, http_port_override: int) -> str:
     """
-    Return (base_url, use_tls) derived from the bolt/neo4j URI.
+    Return base_url derived from the bolt/neo4j URI.
 
     Examples
     --------
-    bolt://localhost:7687      → http://localhost:7474,  tls=False
-    bolt+s://host.io          → https://host.io,         tls=True
-    neo4j+s://host.io         → https://host.io,         tls=True
-    neo4j://localhost:7687    → http://localhost:7474,   tls=False
+    bolt://localhost:7687   → http://localhost:7474
+    neo4j://localhost:7687  → http://localhost:7474
     """
-    scheme, _, rest = uri.partition("://")
-    # strip any bolt port appended to the host
+    _, _, rest = uri.partition("://")
     host = rest.split(":")[0].rstrip("/")
-    tls = scheme in _AURA_SCHEMES
-
-    if http_port_override:
-        port = http_port_override
-    elif tls:
-        port = 443          # Neo4j Aura — HTTPS on 443
-    else:
-        port = 7474         # on-prem — HTTP on 7474
-
-    proto = "https" if tls else "http"
-    base = f"{proto}://{host}:{port}" if port not in (80, 443) else f"{proto}://{host}"
-    return base, tls
+    port = http_port_override if http_port_override else 7474
+    return f"http://{host}:{port}"
 
 
 class Neo4jTools:
@@ -58,22 +37,14 @@ class Neo4jTools:
     def __init__(self):
         settings = get_settings()
 
-        self._base_url, self._tls = _build_http_base(
+        self._base_url = _build_http_base(
             settings.NEO4J_URI, settings.NEO4J_HTTP_PORT
         )
         self._database  = settings.NEO4J_DATABASE
         self._auth      = (settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD)
         self._commit_url = f"{self._base_url}/db/{self._database}/tx/commit"
 
-        # For Aura over a corporate SSL-inspection proxy the proxy re-signs the
-        # certificate with a company CA not in Python's bundle — skip verify.
-        # For on-prem HTTP there is no TLS at all so verify is irrelevant.
-        self._verify = False if self._tls else True
-
-        if self._tls and not self._verify:
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-        logger.info("Neo4j HTTP endpoint: %s  (tls=%s)", self._commit_url, self._tls)
+        logger.info("Neo4j HTTP endpoint: %s", self._commit_url)
 
         # Verify connectivity on startup.
         try:
@@ -84,7 +55,6 @@ class Neo4jTools:
                 headers={"Accept": "application/json;charset=UTF-8",
                          "Content-Type": "application/json"},
                 timeout=15,
-                verify=self._verify,
             )
             resp.raise_for_status()
             body = resp.json()
@@ -94,10 +64,9 @@ class Neo4jTools:
             raise ConnectionError(
                 f"Cannot connect to Neo4j at {self._commit_url}.\n"
                 "Troubleshooting:\n"
-                "  On-prem : confirm Neo4j is running and bolt://localhost:7687 is reachable.\n"
-                "            Default HTTP API is http://localhost:7474 — set NEO4J_HTTP_PORT=7474.\n"
-                "  Aura    : instance may be PAUSED — resume at console.neo4j.io.\n"
-                "  Credentials: check NEO4J_USERNAME / NEO4J_PASSWORD in .env.\n"
+                "  Confirm Neo4j is running and bolt://localhost:7687 is reachable.\n"
+                "  Default HTTP API is http://localhost:7474 — set NEO4J_HTTP_PORT if different.\n"
+                "  Check NEO4J_USERNAME / NEO4J_PASSWORD in .env.\n"
                 f"Original error: {exc}"
             ) from exc
 
@@ -117,7 +86,6 @@ class Neo4jTools:
             headers={"Accept": "application/json;charset=UTF-8",
                      "Content-Type": "application/json"},
             timeout=60,
-            verify=self._verify,
         )
         resp.raise_for_status()
         return resp.json()

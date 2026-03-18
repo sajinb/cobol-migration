@@ -1,13 +1,7 @@
-You are an expoert in Agentic AI development, read the below COBOL migration guide
+You are an expert in Agentic AI development, read the below COBOL migration guide
 Use Langraph and Langchain
-Use Aura Neo4j with below properties
-NEO4J_URI=neo4j+s://71cd3c29.databases.neo4j.io
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=TRb0PAdYEQBR4ZRArOwWIfaaPqejcqneJuWQfOVQti4
-NEO4J_DATABASE=neo4j
-AURA_INSTANCEID=71cd3c29
-AURA_INSTANCENAME=Free instance
-Prepar proper modular structure for Agents
+Use local Neo4j (bolt://localhost:7687, HTTP API on http://localhost:7474)
+Prepare proper modular structure for Agents
 
 
 # COBOL Migration Guide
