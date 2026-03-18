@@ -190,18 +190,67 @@ class MapaCsvImporter:
     def _run_source_parse_pass(self, program_files: Dict[str, str]) -> Dict[str, int]:
         """
         For each Program with a resolvable source file, parse the .cbl with
-        CobolParser and enrich the graph:
+        CobolParser and enrich the graph.
 
-          • Paragraph nodes with start/end line and full source_code
-          • PERFORMS edges (intra-program only — targets must exist in same file)
-          • CALLS edges to external programs (from CALL 'literal' statements)
-          • WORKING-STORAGE DataItem nodes (level, PIC type)
-          • READS / WRITES edges between Paragraphs and DataItems
-
-        These complement the MAPA-reported CALL / COPY data with paragraph-
-        level detail that MAPA's CSV does not include.
+        All Neo4j writes for a single program are collected then sent in one
+        batched HTTP request instead of one request per write — this eliminates
+        the N+1 round-trip bottleneck that caused the pipeline to stall on
+        programs with many paragraphs / data items.
         """
         extra: Dict[str, int] = {"paragraphs": 0, "data_items": 0, "relationships": 0}
+
+        # ── Cypher templates (kept here for locality) ──────────────────
+        _UPSERT_PARA = """
+        MERGE (p:Paragraph {name: $name, program: $program})
+        ON CREATE SET p.status  = 'pending', p.created = timestamp()
+        SET p.start_line  = $start_line,
+            p.end_line    = $end_line,
+            p.source_code = $source_code,
+            p.updated     = timestamp()
+        WITH p
+        MATCH (prog:Program {name: $program})
+        MERGE (prog)-[:HAS_PARAGRAPH]->(p)
+        """
+
+        _SET_PARA_STATUS = """
+        MATCH (p:Paragraph {name: $name, program: $program})
+        SET p.status     = $status,
+            p.complexity = $complexity,
+            p.intent     = $intent,
+            p.updated    = timestamp()
+        """
+
+        _UPSERT_DATA_ITEM = """
+        MERGE (d:DataItem {name: $name, program: $program})
+        SET d.pic_type = $pic_type, d.level = $level
+        WITH d
+        MATCH (prog:Program {name: $program})
+        MERGE (prog)-[:HAS_DATA_ITEM]->(d)
+        """
+
+        _ADD_PERFORMS = """
+        MATCH (a:Paragraph {name: $from_para, program: $program})
+        MATCH (b:Paragraph {name: $to_para,   program: $program})
+        MERGE (a)-[:PERFORMS]->(b)
+        """
+
+        _ADD_CALL = """
+        MERGE (a:Program {name: $from_program})
+        MERGE (b:Program {name: $to_program})
+        MERGE (a)-[:CALLS]->(b)
+        """
+
+        _ADD_READS = """
+        MATCH (p:Paragraph {name: $para,      program: $program})
+        MATCH (d:DataItem  {name: $data_item, program: $program})
+        MERGE (p)-[:READS]->(d)
+        """
+
+        _ADD_WRITES = """
+        MATCH (p:Paragraph {name: $para,      program: $program})
+        MATCH (d:DataItem  {name: $data_item, program: $program})
+        MERGE (p)-[:WRITES]->(d)
+        """
 
         for pgm_name, file_path in program_files.items():
             if not file_path:
@@ -212,68 +261,88 @@ class MapaCsvImporter:
                 logger.debug("Parser found nothing for %s (%s)", pgm_name, file_path)
                 continue
 
-            # Names of all paragraphs in this file (for PERFORMS safety check)
             para_names: Set[str] = {p.name for p in parse_result.paragraphs}
+
+            # Collect every write for this program into a single list,
+            # then flush them all in one (or a few) HTTP requests.
+            batch: List[tuple] = []
 
             # ── Paragraph nodes ────────────────────────────────────────
             for para in parse_result.paragraphs:
-                self._neo4j.upsert_paragraph(
-                    program=pgm_name,
-                    name=para.name,
-                    start_line=para.start_line,
-                    end_line=para.end_line,
-                    source_code=para.source_code,
-                )
+                batch.append((_UPSERT_PARA, {
+                    "program": pgm_name,
+                    "name": para.name,
+                    "start_line": para.start_line,
+                    "end_line": para.end_line,
+                    "source_code": para.source_code,
+                }))
                 extra["paragraphs"] += 1
 
-                # Section-wrapper paragraphs are synthetic (no source to analyse).
-                # Pre-classify them as 'analysed' with a canned intent so the
-                # Migration Agent can process them immediately without an LLM call.
                 if para.is_section_entry and para.performs:
-                    self._neo4j.update_paragraph_status(
-                        name=para.name,
-                        program=pgm_name,
-                        status="analysed",
-                        complexity="LOW",
-                        intent=(
+                    batch.append((_SET_PARA_STATUS, {
+                        "name": para.name,
+                        "program": pgm_name,
+                        "status": "analysed",
+                        "complexity": "LOW",
+                        "intent": (
                             f"COBOL SECTION entry point — delegates to "
                             f"{para.performs[0]} (section body)"
                         ),
-                    )
-                    logger.debug(
-                        "Section entry pre-classified as analysed: %s.%s → %s",
-                        pgm_name, para.name, para.performs[0],
-                    )
+                    }))
 
                 # PERFORMS (intra-program only)
                 for target in para.performs:
                     if target in para_names:
-                        self._neo4j.add_perform_relationship(para.name, target, pgm_name)
+                        batch.append((_ADD_PERFORMS, {
+                            "from_para": para.name,
+                            "to_para": target,
+                            "program": pgm_name,
+                        }))
                         extra["relationships"] += 1
 
-                # CALLS to external programs (create stub Program if needed)
+                # CALLS to external programs
                 for called in para.calls:
-                    self._neo4j.add_call_relationship(pgm_name, called)
+                    batch.append((_ADD_CALL, {
+                        "from_program": pgm_name,
+                        "to_program": called,
+                    }))
                     extra["relationships"] += 1
 
-                # DataItem READS
+                # DataItem READS — upsert item then link
                 for item_name in para.reads:
-                    self._neo4j.upsert_data_item(item_name, pgm_name)
-                    self._neo4j.add_reads_relationship(para.name, item_name, pgm_name)
+                    batch.append((_UPSERT_DATA_ITEM, {
+                        "name": item_name, "program": pgm_name,
+                        "pic_type": "", "level": 0,
+                    }))
+                    batch.append((_ADD_READS, {
+                        "para": para.name, "data_item": item_name, "program": pgm_name,
+                    }))
                     extra["relationships"] += 1
 
-                # DataItem WRITES
+                # DataItem WRITES — upsert item then link
                 for item_name in para.writes:
-                    self._neo4j.upsert_data_item(item_name, pgm_name)
-                    self._neo4j.add_writes_relationship(para.name, item_name, pgm_name)
+                    batch.append((_UPSERT_DATA_ITEM, {
+                        "name": item_name, "program": pgm_name,
+                        "pic_type": "", "level": 0,
+                    }))
+                    batch.append((_ADD_WRITES, {
+                        "para": para.name, "data_item": item_name, "program": pgm_name,
+                    }))
                     extra["relationships"] += 1
 
             # ── WORKING-STORAGE items (program-level DataItem nodes) ───
             for di in parse_result.data_items:
-                self._neo4j.upsert_data_item(
-                    di.name, pgm_name, pic_type=di.pic, level=di.level
-                )
+                batch.append((_UPSERT_DATA_ITEM, {
+                    "name": di.name, "program": pgm_name,
+                    "pic_type": di.pic, "level": di.level,
+                }))
                 extra["data_items"] += 1
+
+            # ── Single batched flush for this program ──────────────────
+            logger.debug(
+                "Flushing %d Neo4j writes for program %s", len(batch), pgm_name
+            )
+            self._neo4j.write_batch(batch)
 
         logger.info(
             "Source-parse pass — paragraphs=%d  data_items=%d  relationships=%d",

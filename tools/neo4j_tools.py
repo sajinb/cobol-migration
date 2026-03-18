@@ -105,33 +105,59 @@ class Neo4jTools:
         pass  # HTTP is stateless — nothing to close.
 
     # ------------------------------------------------------------------ #
-    #  Internal HTTP helper                                                #
+    #  Internal HTTP helpers                                               #
     # ------------------------------------------------------------------ #
 
-    def _run(self, cypher: str, params: Optional[Dict[str, Any]] = None) -> List[Dict]:
-        """POST a single Cypher statement via the HTTP API and return row dicts."""
-        params = params or {}
-        payload = {"statements": [{"statement": cypher, "parameters": params}]}
+    def _post(self, statements: list) -> dict:
+        """POST one or more statements in a single HTTP request."""
         resp = requests.post(
             self._commit_url,
-            json=payload,
+            json={"statements": statements},
             auth=self._auth,
             headers={"Accept": "application/json;charset=UTF-8",
                      "Content-Type": "application/json"},
-            timeout=30,
+            timeout=60,
             verify=self._verify,
         )
         resp.raise_for_status()
-        body = resp.json()
+        return resp.json()
+
+    def _run(self, cypher: str, params: Optional[Dict[str, Any]] = None) -> List[Dict]:
+        """POST a single Cypher statement and return row dicts."""
+        params = params or {}
+        body = self._post([{"statement": cypher, "parameters": params}])
         if body.get("errors"):
             raise RuntimeError(f"Neo4j HTTP error: {body['errors']}")
-
         results = body.get("results", [{}])[0]
         columns = results.get("columns", [])
-        rows = []
-        for entry in results.get("data", []):
-            rows.append(dict(zip(columns, entry["row"])))
-        return rows
+        return [dict(zip(columns, entry["row"])) for entry in results.get("data", [])]
+
+    def write_batch(
+        self,
+        statements: List[tuple],
+        batch_size: int = 200,
+    ) -> None:
+        """
+        Execute multiple (cypher, params) pairs in as few HTTP requests as possible.
+
+        Sending all writes for one program in a handful of requests instead of
+        one-per-write eliminates the N+1 HTTP round-trip bottleneck.
+
+        :param statements: list of (cypher_str, params_dict) tuples
+        :param batch_size: max statements per HTTP request (Neo4j default limit ~500)
+        """
+        if not statements:
+            return
+        for i in range(0, len(statements), batch_size):
+            chunk = statements[i : i + batch_size]
+            payload = [
+                {"statement": cypher, "parameters": params or {}}
+                for cypher, params in chunk
+            ]
+            body = self._post(payload)
+            errors = body.get("errors", [])
+            if errors:
+                raise RuntimeError(f"Neo4j batch error: {errors}")
 
     # ------------------------------------------------------------------ #
     #  Generic query / write                                               #
