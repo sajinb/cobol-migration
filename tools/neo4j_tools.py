@@ -259,6 +259,7 @@ class Neo4jTools:
         generated_code: str = "",
         complexity: str = "",
         intent: str = "",
+        error: str = "",
     ) -> None:
         cypher = """
         MATCH (p:Paragraph {name: $name, program: $program})
@@ -266,6 +267,7 @@ class Neo4jTools:
             p.generated_code = $generated_code,
             p.complexity     = $complexity,
             p.intent         = $intent,
+            p.error          = $error,
             p.updated        = timestamp()
         """
         self.write(
@@ -277,6 +279,7 @@ class Neo4jTools:
                 "generated_code": generated_code,
                 "complexity": complexity,
                 "intent": intent,
+                "error": error,
             },
         )
 

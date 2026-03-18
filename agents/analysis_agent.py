@@ -124,6 +124,22 @@ def _call_llm_analysis(state: AnalysisState) -> AnalysisState:
         }
 
 
+def _persist_failure(state: AnalysisState) -> AnalysisState:
+    """Write the failure status and error message back to Neo4j."""
+    try:
+        neo4j = Neo4jTools()
+        neo4j.update_paragraph_status(
+            name=state["paragraph"],
+            program=state["program"],
+            status="failed",
+            error=state.get("error", "unknown error"),
+        )
+        neo4j.close()
+    except Exception as exc:
+        logger.exception("Could not persist failure for %s: %s", state["paragraph"], exc)
+    return state
+
+
 def _store_analysis(state: AnalysisState) -> AnalysisState:
     """Write analysis results back to the Paragraph node in Neo4j."""
     if state["status"] == "failed":
@@ -181,17 +197,22 @@ class AnalysisAgent:
         builder.add_node("fetch_subgraph", _fetch_subgraph)
         builder.add_node("call_llm_analysis", _call_llm_analysis)
         builder.add_node("store_analysis", _store_analysis)
+        builder.add_node("persist_failure", _persist_failure)
 
         builder.add_edge(START, "fetch_subgraph")
         builder.add_conditional_edges(
             "fetch_subgraph",
-            lambda s: END if s["status"] == "failed" else "call_llm_analysis",
+            lambda s: "persist_failure" if s["status"] == "failed" else "call_llm_analysis",
         )
         builder.add_conditional_edges(
             "call_llm_analysis",
-            lambda s: END if s["status"] == "failed" else "store_analysis",
+            lambda s: "persist_failure" if s["status"] == "failed" else "store_analysis",
         )
-        builder.add_edge("store_analysis", END)
+        builder.add_conditional_edges(
+            "store_analysis",
+            lambda s: "persist_failure" if s["status"] == "failed" else END,
+        )
+        builder.add_edge("persist_failure", END)
 
         return builder.compile()
 

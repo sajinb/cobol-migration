@@ -130,6 +130,22 @@ def _generate_java(state: MigrationState) -> MigrationState:
         }
 
 
+def _persist_failure(state: MigrationState) -> MigrationState:
+    """Write the failure status and error message back to Neo4j."""
+    try:
+        neo4j = Neo4jTools()
+        neo4j.update_paragraph_status(
+            name=state["paragraph"],
+            program=state["program"],
+            status="failed",
+            error=state.get("error", "unknown error"),
+        )
+        neo4j.close()
+    except Exception as exc:
+        logger.exception("Could not persist failure for %s: %s", state["paragraph"], exc)
+    return state
+
+
 def _store_generated_code(state: MigrationState) -> MigrationState:
     """Persist the generated Java code to the Paragraph node in Neo4j."""
     if state["status"] == "failed":
@@ -184,17 +200,22 @@ class MigrationAgent:
         builder.add_node("fetch_context", _fetch_context)
         builder.add_node("generate_java", _generate_java)
         builder.add_node("store_generated_code", _store_generated_code)
+        builder.add_node("persist_failure", _persist_failure)
 
         builder.add_edge(START, "fetch_context")
         builder.add_conditional_edges(
             "fetch_context",
-            lambda s: END if s["status"] == "failed" else "generate_java",
+            lambda s: "persist_failure" if s["status"] == "failed" else "generate_java",
         )
         builder.add_conditional_edges(
             "generate_java",
-            lambda s: END if s["status"] == "failed" else "store_generated_code",
+            lambda s: "persist_failure" if s["status"] == "failed" else "store_generated_code",
         )
-        builder.add_edge("store_generated_code", END)
+        builder.add_conditional_edges(
+            "store_generated_code",
+            lambda s: "persist_failure" if s["status"] == "failed" else END,
+        )
+        builder.add_edge("persist_failure", END)
 
         return builder.compile()
 
