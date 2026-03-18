@@ -15,6 +15,7 @@ Checks:
 
 import json
 import logging
+import re
 from typing import Annotated, Dict, List, TypedDict
 
 from langgraph.graph import StateGraph, START, END
@@ -90,6 +91,19 @@ def _fetch_for_validation(state: ValidationState) -> ValidationState:
         }
 
 
+def _extract_json(text: str) -> str:
+    """
+    Strip markdown code fences and extract the first JSON object from *text*.
+    Handles ```json ... ```, ``` ... ```, and plain JSON responses.
+    Falls back to the original text so json.loads produces a clear error.
+    """
+    # Remove ```json ... ``` or ``` ... ``` fences
+    fenced = re.sub(r"```(?:json)?\s*", "", text).replace("```", "").strip()
+    # Find the outermost { ... } block in case there is preamble text
+    match = re.search(r"\{.*\}", fenced, re.DOTALL)
+    return match.group(0) if match else fenced
+
+
 def _review_with_llm(state: ValidationState) -> ValidationState:
     """Ask LLM to review the generated Java against the original COBOL."""
     if state["status"] == "failed":
@@ -115,7 +129,7 @@ def _review_with_llm(state: ValidationState) -> ValidationState:
         llm = LLMTools()
         raw = llm.call_with_retry(VALIDATION_SYSTEM_PROMPT, human_prompt)
 
-        verdict = json.loads(raw)
+        verdict = json.loads(_extract_json(raw))
         passed = bool(verdict.get("pass", False))
         failure_reason = ""
         if not passed:

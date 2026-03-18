@@ -265,7 +265,12 @@ Generate the method fragment now.
 VALIDATION_SYSTEM_PROMPT = """You are a senior Java code reviewer specialising in COBOL migration.
 Review the generated Java method against the original COBOL source and return a structured JSON report.
 
-Return ONLY valid JSON — no markdown fences, no extra text.
+CRITICAL OUTPUT RULES — you MUST follow these exactly:
+- Output ONLY the raw JSON object. Nothing else.
+- Do NOT wrap the JSON in markdown code fences (no ```json, no ```)
+- Do NOT add any explanation, preamble, or trailing text
+- The very first character of your response must be `{`
+- The very last character of your response must be `}`
 """
 
 VALIDATION_RESPONSE_SCHEMA = """{
