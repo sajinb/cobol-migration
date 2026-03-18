@@ -35,6 +35,27 @@ def _validate_key(key: str, provider: str, prefix: str) -> None:
         )
 
 
+def _ssl_verify(settings) -> "bool | str":
+    """
+    Parse LLM_SSL_VERIFY into the value httpx expects:
+      - True   → normal certificate verification (default)
+      - False  → disable verification (corporate proxy with self-signed cert)
+      - str    → path to a CA bundle PEM/CRT file
+    """
+    raw = settings.LLM_SSL_VERIFY.strip()
+    if raw.lower() == "false":
+        logger.warning(
+            "LLM SSL verification DISABLED (LLM_SSL_VERIFY=false). "
+            "Set LLM_SSL_VERIFY to your corporate CA bundle path for a more secure option."
+        )
+        return False
+    if raw.lower() not in ("true", "1", ""):
+        # Treat any other non-boolean value as a CA-bundle path
+        logger.info("LLM SSL: using custom CA bundle at %s", raw)
+        return raw
+    return True
+
+
 def build_llm(model_override: Optional[str] = None) -> BaseChatModel:
     """
     Build and return the configured LLM instance.
@@ -42,9 +63,15 @@ def build_llm(model_override: Optional[str] = None) -> BaseChatModel:
 
     SDK-level retries are disabled (max_retries=0) so that LLMTools.call_with_retry
     has full control over back-off and error reporting.
+
+    A custom httpx client is injected when LLM_SSL_VERIFY is overridden, which is
+    needed behind corporate proxies that use self-signed certificate chains.
     """
+    import httpx
+
     settings = get_settings()
     model = model_override or settings.LLM_MODEL
+    verify = _ssl_verify(settings)
 
     if settings.ANTHROPIC_API_KEY:
         _validate_key(settings.ANTHROPIC_API_KEY, "Anthropic", _ANTHROPIC_KEY_PREFIX)
@@ -56,6 +83,8 @@ def build_llm(model_override: Optional[str] = None) -> BaseChatModel:
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
             max_retries=0,  # let call_with_retry handle retries
+            http_client=httpx.Client(verify=verify) if verify is not True else None,
+            http_async_client=httpx.AsyncClient(verify=verify) if verify is not True else None,
         )
 
     if settings.OPENAI_API_KEY:
@@ -68,6 +97,8 @@ def build_llm(model_override: Optional[str] = None) -> BaseChatModel:
             temperature=settings.LLM_TEMPERATURE,
             max_tokens=settings.LLM_MAX_TOKENS,
             max_retries=0,  # let call_with_retry handle retries
+            http_client=httpx.Client(verify=verify) if verify is not True else None,
+            http_async_client=httpx.AsyncClient(verify=verify) if verify is not True else None,
         )
 
     raise EnvironmentError(

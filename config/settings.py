@@ -27,6 +27,11 @@ class Settings:
     LLM_MODEL: str = os.getenv("LLM_MODEL", "claude-sonnet-4-6")
     LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
     LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "4096"))
+    # SSL verification for LLM HTTP calls.
+    # Set to "false" to disable (corporate proxy with self-signed cert),
+    # or to an absolute path pointing to your corporate CA bundle (.pem/.crt).
+    # Leave unset (default "true") for normal certificate verification.
+    LLM_SSL_VERIFY: str = os.getenv("LLM_SSL_VERIFY", "true")
 
     # Migration Pipeline
     COBOL_SOURCE_DIR: str = os.getenv("COBOL_SOURCE_DIR", "./cobol_samples")
