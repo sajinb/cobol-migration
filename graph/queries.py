@@ -56,7 +56,7 @@ class GraphQueries:
         """
         cypher = """
         MATCH (p:Paragraph {name: $name, program: $program})
-        OPTIONAL MATCH (p)-[:PERFORMS*1..5]->(child:Paragraph)
+        OPTIONAL MATCH (p)-[:PERFORMS]->(child:Paragraph)
         OPTIONAL MATCH (p)-[:READS]->(r:DataItem)
         OPTIONAL MATCH (p)-[:WRITES]->(w:DataItem)
         OPTIONAL MATCH (p)-[:CALLS]->(ext:Program)

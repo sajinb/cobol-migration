@@ -149,6 +149,11 @@ FORBIDDEN:
   every PERFORM target is already (or will be) a real method in this class
 - Do NOT use markdown fences (``` or ```)
 - Do NOT add prose outside the marker sections
+- Do NOT resolve ALTER statement targets statically.
+  ALTER is a runtime mechanism — the COBOL source is authoritative.
+  If the source says PERFORM OLD-PARAGRAPH, emit oldParagraph() exactly once.
+  Add a comment noting the ALTER concern, but never substitute a different
+  method or omit the call that is written in the source.
 
 Return ONLY the marker sections and their content.
 """
