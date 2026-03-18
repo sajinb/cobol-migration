@@ -39,13 +39,21 @@ class MapaCsvImporter:
         """
         Full ingestion run.
 
-        Pass 1 — MAPA CSV: Program, Copybook, CALLS, DD (dataset) nodes.
+        Detects the CSV format automatically:
+          - Custom format (header row: program,paragraph,...) → _run_custom_csv
+          - MAPA native format (no header, first col = record-type tag) → standard path
+
+        Pass 1 — Program nodes from CSV.
         Pass 2 — CobolParser: Paragraph nodes, DataItems, PERFORMS / READS / WRITES.
 
         Returns counts: programs, paragraphs, data_items, copybooks, calls,
         datasets, relationships.
         """
         apply_schema(self._neo4j)
+
+        if self._is_custom_csv(csv_path):
+            logger.info("Detected custom CSV format — using simplified ingestion path.")
+            return self._run_custom_csv(csv_path)
 
         records = FileTools.parse_mapa_csv(csv_path)
         if not records:
@@ -351,6 +359,70 @@ class MapaCsvImporter:
             extra["relationships"],
         )
         return extra
+
+    # ------------------------------------------------------------------ #
+    #  Custom CSV format (simplified, header-based)                        #
+    # ------------------------------------------------------------------ #
+
+    def _is_custom_csv(self, csv_path: str) -> bool:
+        """Return True if the CSV has a header row starting with 'program'."""
+        import csv as _csv
+        path = Path(csv_path)
+        if not path.exists():
+            return False
+        with path.open("r", newline="", errors="replace") as fh:
+            first = next(_csv.reader(fh), None)
+        return bool(first and first[0].strip().lower() == "program")
+
+    def _run_custom_csv(self, csv_path: str) -> Dict[str, int]:
+        """
+        Ingest the simplified custom CSV format:
+          program, paragraph, start_line, end_line, performs, calls,
+          copies, data_reads, data_writes
+
+        Pass 1 — create Program nodes from unique program names in the CSV.
+        Pass 2 — CobolParser enriches each program from its .cbl source file.
+        """
+        import csv as _csv
+
+        counts: Dict[str, int] = {
+            "programs": 0, "paragraphs": 0, "data_items": 0,
+            "copybooks": 0, "calls": 0, "datasets": 0, "relationships": 0,
+        }
+
+        program_files: Dict[str, str] = {}
+        seen_programs: Set[str] = set()
+
+        path = Path(csv_path)
+        with path.open("r", newline="", errors="replace") as fh:
+            reader = _csv.DictReader(fh)
+            for row in reader:
+                pgm_name = row.get("program", "").strip().upper()
+                if not pgm_name:
+                    continue
+                if pgm_name not in seen_programs:
+                    cobol_file = self._find_cobol_file(pgm_name)
+                    resolved   = str(cobol_file) if cobol_file else ""
+                    self._neo4j.upsert_program(pgm_name, resolved)
+                    seen_programs.add(pgm_name)
+                    program_files[pgm_name] = resolved
+                    logger.debug("Program (custom CSV): %s  (%s)", pgm_name, resolved)
+
+        counts["programs"] = len(seen_programs)
+
+        # Pass 2 — source-level enrichment via CobolParser
+        src = self._run_source_parse_pass(program_files)
+        counts["paragraphs"]    += src["paragraphs"]
+        counts["data_items"]    += src["data_items"]
+        counts["relationships"] += src["relationships"]
+
+        logger.info(
+            "Custom CSV import complete — programs=%d  paragraphs=%d  "
+            "data_items=%d  relationships=%d",
+            counts["programs"], counts["paragraphs"],
+            counts["data_items"], counts["relationships"],
+        )
+        return counts
 
     # ------------------------------------------------------------------ #
     #  Internal helpers                                                    #

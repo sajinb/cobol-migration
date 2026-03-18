@@ -136,12 +136,31 @@ COBOL → Java mapping rules:
 - EXEC CICS                    → @Transactional / Spring MVC pattern
 - PIC 9(n)                     → int / long
 - PIC 9(n)V9(d)                → BigDecimal  (always HALF_UP rounding)
-- PIC X(n)                     → String
+- PIC X(n)                     → String  (do NOT add trailing-space padding)
 - COMP / COMP-4                → int / long
 - COMP-3 / packed-decimal      → BigDecimal
 - OCCURS n TIMES               → T[] array (0-based index in Java)
 - OCCURS DEPENDING ON          → List<T>
 - 88-level condition name      → boolean constant or enum
+
+Numeric-edited PIC clauses (display formatting):
+- PIC $ZZ,ZZ9.99 / PIC ZZZ,ZZ9 / PIC Z(n)9 etc.
+                               → String field in Java (the field holds the FORMATTED string)
+  * Count the total digit positions to determine the maximum value the field can hold:
+    - Z = zero-suppressed digit position (shows space when zero)
+    - 9 = mandatory digit position
+    - $ / , / . = insertion characters (not digit positions)
+  * Example: PIC $ZZ,ZZ9.99 has 5 digit positions + 2 decimal → max $99,999.99
+  * Use a private static final DecimalFormat for the corresponding pattern:
+      - Z → '#' in DecimalFormat (optional digit, suppresses leading zeros)
+      - 9 → '0' in DecimalFormat (mandatory digit)
+      - $ → literal '$', , → ',', . → '.'
+      - PIC $ZZ,ZZ9.99 → new DecimalFormat("$#,##0.00")
+  * MOVE <numeric> TO <edited-pic-field>:
+      this.wsDisplayPay = DISPLAY_PAY_FORMAT.format(wsGross.doubleValue());
+  * Declare the formatter as a private static final class constant (NOT inside the method):
+      private static final DecimalFormat DISPLAY_PAY_FORMAT = new DecimalFormat("$#,##0.00");
+  * Import: import java.text.DecimalFormat;
 
 FORBIDDEN:
 - Do NOT wrap the output in a class declaration
