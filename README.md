@@ -1,3 +1,170 @@
+# COBOL Migration — LangGraph / LangChain Agent Pipeline
+
+An agentic AI system that migrates IBM COBOL programs to Java Spring Boot microservices
+using LangGraph, LangChain, and Neo4j as a shared graph memory store.
+
+---
+
+## Project Structure
+
+```
+cobol-migration/
+├── main.py                    # CLI entry point (all commands)
+├── agents/
+│   ├── orchestrator_agent.py  # Plans and delegates migration tasks
+│   ├── ingestion_agent.py     # Reads MAPA CSV + COBOL files → Neo4j
+│   ├── analysis_agent.py      # Traverses graph, scores complexity
+│   ├── migration_agent.py     # Generates Java from paragraph subgraph + LLM
+│   └── validation_agent.py    # Validates generated Java, retries on failure
+├── graph/
+│   ├── schema.py              # Neo4j constraints and indexes
+│   ├── importer.py            # Cypher bulk-import from MAPA CSV
+│   └── queries.py             # Graph RAG query helpers
+├── prompts/
+│   └── migration_prompts.py   # LLM prompt templates (system + user)
+├── tools/
+│   ├── neo4j_tools.py         # Neo4j HTTP API wrapper
+│   ├── llm_tools.py           # Anthropic / OpenAI LangChain wrapper
+│   ├── file_tools.py          # Java file assembly + companion file parsing
+│   ├── cobol_parser.py        # COBOL source slicer (paragraph extraction)
+│   └── mapa_runner.py         # Auto-downloads and runs CallTree.jar
+├── config/settings.py         # Pydantic settings (reads .env)
+├── cobol_samples/             # Sample COBOL programs and result.csv
+└── requirements.txt
+```
+
+---
+
+## Prerequisites
+
+- Python 3.11+
+- Java 11+ (for running MAPA / CallTree.jar)
+- Neo4j 5.x running locally (`bolt://localhost:7687`, HTTP on `http://localhost:7474`)
+- Anthropic API key (or OpenAI API key as fallback)
+
+---
+
+## Quick Start
+
+### 1. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Configure environment
+
+```bash
+cp .env.example .env
+# Edit .env — set NEO4J_PASSWORD and ANTHROPIC_API_KEY at minimum
+```
+
+Key `.env` settings:
+
+| Variable | Default | Description |
+|---|---|---|
+| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j Bolt URI |
+| `NEO4J_HTTP_PORT` | `7474` | Neo4j HTTP API port |
+| `NEO4J_PASSWORD` | *(required)* | Neo4j password |
+| `ANTHROPIC_API_KEY` | *(required)* | Claude API key |
+| `LLM_MODEL` | `claude-sonnet-4-6` | Model used for migration |
+| `COBOL_SOURCE_DIR` | `./cobol_samples` | Directory of `.cbl` files |
+| `MAPA_CSV_PATH` | `./cobol_samples/result.csv` | MAPA structural output |
+| `LLM_SSL_VERIFY` | `true` | Set to `false` or CA-bundle path for corporate proxies |
+
+### 3. Apply Neo4j schema
+
+```bash
+python main.py schema
+```
+
+### 4. Run the full pipeline
+
+```bash
+# Full pipeline — MAPA runs automatically if result.csv is missing
+python main.py run --cobol-dir ./cobol_samples
+
+# Or specify programs to migrate
+python main.py run --cobol-dir ./cobol_samples --programs MEGADEMO,POLICY
+```
+
+---
+
+## CLI Commands
+
+```bash
+# Run MAPA (CallTree.jar) to generate result.csv from COBOL source
+python main.py mapa --cobol-dir ./cobol_samples [--copy ./copybooks]
+
+# Ingest MAPA CSV + COBOL source into Neo4j
+python main.py ingest --cobol-dir ./cobol_samples
+
+# Analyse all paragraphs in a program (complexity, intent)
+python main.py analyse --program MEGADEMO
+
+# Migrate all paragraphs in a program to Java
+python main.py migrate --program MEGADEMO
+python main.py migrate --program MEGADEMO --force      # re-generate already-migrated
+
+# Assemble per-paragraph fragments into one @Service class file
+python main.py assemble --program MEGADEMO
+
+# Validate generated Java (all migrated, by program, or single paragraph)
+python main.py validate
+python main.py validate --program MEGADEMO
+python main.py validate --program MEGADEMO --paragraph CALC-PREMIUM
+
+# Print migration status report
+python main.py report
+
+# Apply / verify Neo4j schema constraints
+python main.py schema
+```
+
+---
+
+## Generated Output
+
+Each run writes Java to `OUTPUT_DIR` (default `./output`):
+
+| File | Description |
+|---|---|
+| `<Program>Service.java` | Assembled Spring Boot `@Service` class |
+| `<Copybook>.java` | JPA `@Entity` for each referenced copybook |
+| `<Copybook>Repository.java` | `JpaRepository` interface for each entity |
+
+---
+
+## Corporate Proxy / SSL
+
+If you see `[SSL: CERTIFICATE_VERIFY_FAILED]`, add to `.env`:
+
+```env
+# Point to your corporate CA bundle (recommended):
+LLM_SSL_VERIFY=C:\path\to\corporate-ca-bundle.pem
+
+# Or disable entirely (less secure):
+LLM_SSL_VERIFY=false
+```
+
+---
+
+## Recent Changes
+
+| Commit | Change |
+|---|---|
+| `dab8875` | Copybook companion files now always emit `@Entity` + `@Table` + `@Id` + `@GeneratedValue` + `import jakarta.persistence.*` by default |
+| `ec3c884` | Copybooks wired into the migration prompt so entity classes and repository interfaces are generated |
+| `fd85944` | Fixed numeric-edited PIC clause migration (e.g. `PIC Z9`) and custom CSV ingestion |
+| `4e7c00f` | Added PAY-LOOP entries to `result.csv` for ingestion testing |
+| `54f6fd2` | Fixed two validation failures in MEGADEMO pipeline |
+| `a214e02` | Persist failure error messages to Neo4j so `error` field is never null |
+| `254825d` | Removed Neo4j Aura references — local-only connection (bolt + HTTP port 7474) |
+| `357c5c6` | Handle LLM markdown fences in validation JSON response |
+| `03c92c2` | Inject custom `httpx` client into Anthropic SDK for corporate proxy SSL |
+
+---
+
 # COBOL Migration Guide
 
 **1st Step in migration of COBOL is understanding COBOL code structure**
