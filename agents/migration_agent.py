@@ -110,6 +110,7 @@ def _generate_java(state: MigrationState) -> MigrationState:
             external_calls=sg.get("external_calls", []),
             sql_tables=sg.get("sql_tables", []),
             shared_state_items=state.get("shared_state_items", []),
+            copybooks=sg.get("copybooks", []),
             migration_notes=state.get("failure_reason", ""),
         )
         llm = LLMTools()

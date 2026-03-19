@@ -61,6 +61,7 @@ class GraphQueries:
         OPTIONAL MATCH (p)-[:WRITES]->(w:DataItem)
         OPTIONAL MATCH (p)-[:CALLS]->(ext:Program)
         OPTIONAL MATCH (p)-[:EXECUTES_SQL]->(tbl:Table)
+        OPTIONAL MATCH (prog:Program {name: $program})-[:COPIES]->(c:Copybook)
         RETURN
             p.name                             AS paragraph_name,
             p.source_code                      AS source_code,
@@ -84,7 +85,8 @@ class GraphQueries:
                 access:   'WRITE'
             })                                 AS writes,
             collect(DISTINCT ext.name)         AS external_calls,
-            collect(DISTINCT tbl.name)         AS sql_tables
+            collect(DISTINCT tbl.name)         AS sql_tables,
+            collect(DISTINCT c.name)           AS copybooks
         """
         results = self._neo4j.query(cypher, {"name": para_name, "program": program})
         return results[0] if results else {}
