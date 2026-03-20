@@ -59,6 +59,39 @@ def _subprocess_env(settings) -> dict:
     return env
 
 
+def _validate_pipeline(settings) -> None:
+    """
+    Raise RuntimeError with a clear, actionable message if the pipeline
+    entry-point (main.py) cannot be found.
+
+    This catches the common deployment scenario where the backend is running
+    in a different directory than the pipeline code, producing the cryptic
+    "can't open file … main.py" error from the Python subprocess.
+    """
+    from pathlib import Path as _Path
+    main_py = _Path(settings.main_py)
+    if not main_py.exists():
+        raise RuntimeError(
+            f"Pipeline entry-point not found: {main_py}\n"
+            f"\n"
+            f"The backend cannot locate main.py. This usually means the backend\n"
+            f"is deployed in a different directory from the pipeline code.\n"
+            f"\n"
+            f"Fix — add one of the following to your backend/.env file:\n"
+            f"\n"
+            f"  Option A — point directly to main.py:\n"
+            f"    PIPELINE_MAIN_PY=C:\\path\\to\\cobol-migration\\main.py\n"
+            f"\n"
+            f"  Option B — set the pipeline root directory:\n"
+            f"    COBOL_MIGRATION_DIR=C:\\path\\to\\cobol-migration\n"
+            f"\n"
+            f"Current values:\n"
+            f"  COBOL_MIGRATION_DIR = {settings.COBOL_MIGRATION_DIR}\n"
+            f"  PIPELINE_MAIN_PY    = {settings.PIPELINE_MAIN_PY or '(not set)'}\n"
+            f"  Resolved main.py    = {main_py}"
+        )
+
+
 async def _run_subprocess(cmd: list, cwd: str, env: dict, line_cb) -> int:
     """
     Run cmd as a subprocess and call line_cb(text) for each output line.
@@ -135,6 +168,8 @@ async def run_migration(pool: asyncpg.Pool, run_id: str, project_id: str,
         cmd += ["--copy", copybook_dir]
 
     try:
+        _validate_pipeline(settings)
+
         async def _log(text):
             await _save_log(pool, run_id, text, _parse_level(text), _parse_step(text))
 
@@ -182,6 +217,8 @@ async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
         cmd += ["--program", program]
 
     try:
+        _validate_pipeline(settings)
+
         async def _log(text):
             await _save_log(pool, run_id, text, _parse_level(text), _parse_step(text))
 
