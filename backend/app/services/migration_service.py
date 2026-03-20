@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import sys
+import traceback
 from datetime import datetime, timezone
 
 import asyncpg
@@ -57,6 +58,16 @@ def _subprocess_env(settings) -> dict:
     return env
 
 
+def _subprocess_kwargs() -> dict:
+    """Extra kwargs for asyncio.create_subprocess_exec to handle platform quirks."""
+    kwargs = {}
+    if sys.platform == "win32":
+        # Suppress the console window that Windows would otherwise open for each subprocess
+        import subprocess as _sp
+        kwargs["creationflags"] = _sp.CREATE_NO_WINDOW
+    return kwargs
+
+
 async def _save_log(pool: asyncpg.Pool, run_id: str, message: str,
                     level: str = "INFO", step: str | None = None) -> None:
     async with pool.acquire() as conn:
@@ -89,6 +100,7 @@ async def run_migration(pool: asyncpg.Pool, run_id: str, project_id: str,
             stderr=asyncio.subprocess.STDOUT,
             cwd=settings.COBOL_MIGRATION_DIR,
             env=_subprocess_env(settings),
+            **_subprocess_kwargs(),
         )
 
         async for raw in proc.stdout:
@@ -98,9 +110,16 @@ async def run_migration(pool: asyncpg.Pool, run_id: str, project_id: str,
 
         await proc.wait()
         final_status = "completed" if proc.returncode == 0 else "failed"
+        if proc.returncode != 0:
+            await _save_log(pool, run_id,
+                            f"Process exited with code {proc.returncode}",
+                            "ERROR", "error")
 
     except Exception as exc:
-        await _save_log(pool, run_id, f"Subprocess error: {exc}", "ERROR", "error")
+        detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        await _save_log(pool, run_id,
+                        f"Subprocess error: {detail}\n{traceback.format_exc()}",
+                        "ERROR", "error")
         final_status = "failed"
 
     async with pool.acquire() as conn:
@@ -139,6 +158,7 @@ async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
             stderr=asyncio.subprocess.STDOUT,
             cwd=settings.COBOL_MIGRATION_DIR,
             env=_subprocess_env(settings),
+            **_subprocess_kwargs(),
         )
 
         async for raw in proc.stdout:
@@ -148,9 +168,16 @@ async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
 
         await proc.wait()
         final_status = "completed" if proc.returncode == 0 else "failed"
+        if proc.returncode != 0:
+            await _save_log(pool, run_id,
+                            f"Process exited with code {proc.returncode}",
+                            "ERROR", "error")
 
     except Exception as exc:
-        await _save_log(pool, run_id, f"Subprocess error: {exc}", "ERROR", "error")
+        detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        await _save_log(pool, run_id,
+                        f"Subprocess error: {detail}\n{traceback.format_exc()}",
+                        "ERROR", "error")
         final_status = "failed"
 
     async with pool.acquire() as conn:

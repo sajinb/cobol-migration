@@ -1,3 +1,5 @@
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,6 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import get_settings
 from .database import create_pool, init_schema
 from .routers import projects, migration
+
+# On Windows, asyncio.create_subprocess_exec requires ProactorEventLoop.
+# Python 3.8+ sets this as default, but uvicorn can override it.
+# Explicitly enforce it here so subprocess spawning always works.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 
 @asynccontextmanager
