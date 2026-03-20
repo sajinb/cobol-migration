@@ -8,9 +8,12 @@ class Settings(BaseSettings):
     COBOL_MIGRATION_DIR: str = str(Path(__file__).parent.parent.parent)
     CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
 
+    # MAPA JAR — set to a custom absolute path when the JARs are not in the project root
+    MAPA_JAR_PATH: str = "./CallTree.jar"
+    MAPA_AUTO_DOWNLOAD: bool = True
+
     class Config:
         env_file = ".env"
-        extra = "ignore"
 
     @property
     def main_py(self) -> str:

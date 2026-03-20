@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -43,6 +44,19 @@ def _parse_step(line: str) -> str | None:
     return None
 
 
+def _subprocess_env(settings) -> dict:
+    """
+    Build an env dict for pipeline subprocesses.
+    Forwards MAPA_JAR_PATH and MAPA_AUTO_DOWNLOAD from the backend Settings
+    so the pipeline always uses the values declared here, regardless of what
+    the pipeline's own .env file contains.
+    """
+    env = os.environ.copy()
+    env["MAPA_JAR_PATH"] = settings.MAPA_JAR_PATH
+    env["MAPA_AUTO_DOWNLOAD"] = str(settings.MAPA_AUTO_DOWNLOAD).lower()
+    return env
+
+
 async def _save_log(pool: asyncpg.Pool, run_id: str, message: str,
                     level: str = "INFO", step: str | None = None) -> None:
     async with pool.acquire() as conn:
@@ -74,6 +88,7 @@ async def run_migration(pool: asyncpg.Pool, run_id: str, project_id: str,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=settings.COBOL_MIGRATION_DIR,
+            env=_subprocess_env(settings),
         )
 
         async for raw in proc.stdout:
@@ -123,6 +138,7 @@ async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=settings.COBOL_MIGRATION_DIR,
+            env=_subprocess_env(settings),
         )
 
         async for raw in proc.stdout:
