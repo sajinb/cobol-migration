@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # Computed automatically from __file__ — override in .env if the backend
     # is deployed separately from the pipeline code, e.g.:
     #   COBOL_MIGRATION_DIR=C:\path\to\cobol-migration
-    COBOL_MIGRATION_DIR: str = str(Path(__file__).parent.parent.parent)
+    COBOL_MIGRATION_DIR: str = str(Path(__file__).resolve().parent.parent.parent)
 
     # Explicit path to the pipeline entry-point (main.py).
     # Leave blank to use COBOL_MIGRATION_DIR/main.py (the default).
