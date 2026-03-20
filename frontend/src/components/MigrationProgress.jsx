@@ -63,7 +63,7 @@ export default function MigrationProgress({ projectId, runId, initialStatus, onC
       runId,
       (log) => {
         setLogs(prev => [...prev, log])
-        if (log.step) setActive(log.step)
+        if (log.step && STEPS.includes(log.step)) setActive(log.step)
       },
       (result) => { setStatus(result.status); onComplete?.() },
       () => {},

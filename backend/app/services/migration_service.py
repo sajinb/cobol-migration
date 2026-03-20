@@ -14,13 +14,14 @@ from ..config import get_settings
 _LOG_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+(\w+)\s+(\S+)\s+[—-]")
 
 _STEP_MAP = {
-    "ingestion":    "ingest",
-    "analysis":     "analyse",
-    "migration":    "migrate",
-    "validation":   "validate",
-    "orchestrator": "orchestrate",
-    "mapa":         "mapa",
-    "importer":     "ingest",
+    "ingestion":  "ingest",
+    "analysis":   "analyse",
+    "migration":  "migrate",
+    "validation": "validate",
+    "mapa":       "mapa",
+    "importer":   "ingest",
+    # orchestrator logs span all phases — do not map to a stage so the last
+    # known sub-agent stage remains active in the UI.
 }
 
 
@@ -202,14 +203,20 @@ async def run_migration(pool: asyncpg.Pool, run_id: str, project_id: str,
         final_status = "completed" if returncode == 0 else "failed"
         if returncode != 0:
             await _save_log(pool, run_id,
-                            f"Process exited with code {returncode}", "ERROR", "error")
+                            f"Process exited with code {returncode}", "ERROR")
 
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         await _save_log(pool, run_id,
                         f"Subprocess error: {detail}\n{traceback.format_exc()}",
-                        "ERROR", "error")
+                        "ERROR")
         final_status = "failed"
+
+    # Save the terminal log line BEFORE updating run status so the SSE stream
+    # never sends the "done" event before this message is committed.
+    await _save_log(pool, run_id,
+                    f"Migration {final_status}.",
+                    "INFO" if final_status == "completed" else "ERROR")
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -217,11 +224,6 @@ async def run_migration(pool: asyncpg.Pool, run_id: str, project_id: str,
             final_status, datetime.now(timezone.utc), run_id,
         )
         await conn.execute("UPDATE projects SET status=$1 WHERE id=$2", final_status, project_id)
-
-    await _save_log(pool, run_id,
-                    f"Migration {final_status}.",
-                    "INFO" if final_status == "completed" else "ERROR",
-                    "done")
 
 
 async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
@@ -251,14 +253,18 @@ async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
         final_status = "completed" if returncode == 0 else "failed"
         if returncode != 0:
             await _save_log(pool, run_id,
-                            f"Process exited with code {returncode}", "ERROR", "error")
+                            f"Process exited with code {returncode}", "ERROR")
 
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         await _save_log(pool, run_id,
                         f"Subprocess error: {detail}\n{traceback.format_exc()}",
-                        "ERROR", "error")
+                        "ERROR")
         final_status = "failed"
+
+    await _save_log(pool, run_id,
+                    f"Retry {final_status}.",
+                    "INFO" if final_status == "completed" else "ERROR")
 
     async with pool.acquire() as conn:
         await conn.execute(
@@ -266,8 +272,3 @@ async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
             final_status, datetime.now(timezone.utc), run_id,
         )
         await conn.execute("UPDATE projects SET status=$1 WHERE id=$2", final_status, project_id)
-
-    await _save_log(pool, run_id,
-                    f"Retry {final_status}.",
-                    "INFO" if final_status == "completed" else "ERROR",
-                    "done")
