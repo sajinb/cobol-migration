@@ -99,3 +99,52 @@ async def run_migration(pool: asyncpg.Pool, run_id: str, project_id: str,
                     f"Migration {final_status}.",
                     "INFO" if final_status == "completed" else "ERROR",
                     "done")
+
+
+async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
+                    program: str | None = None) -> None:
+    """Background task: retry failed paragraphs via 'main.py retry [--program PROGRAM]'."""
+    settings = get_settings()
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE migration_runs SET status='running', started_at=$1 WHERE id=$2",
+            datetime.now(timezone.utc), run_id,
+        )
+        await conn.execute("UPDATE projects SET status='migrating' WHERE id=$1", project_id)
+
+    cmd = [sys.executable, settings.main_py, "retry"]
+    if program:
+        cmd += ["--program", program]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=settings.COBOL_MIGRATION_DIR,
+        )
+
+        async for raw in proc.stdout:
+            text = raw.decode("utf-8", errors="replace").rstrip()
+            if text:
+                await _save_log(pool, run_id, text, _parse_level(text), _parse_step(text))
+
+        await proc.wait()
+        final_status = "completed" if proc.returncode == 0 else "failed"
+
+    except Exception as exc:
+        await _save_log(pool, run_id, f"Subprocess error: {exc}", "ERROR", "error")
+        final_status = "failed"
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE migration_runs SET status=$1, completed_at=$2 WHERE id=$3",
+            final_status, datetime.now(timezone.utc), run_id,
+        )
+        await conn.execute("UPDATE projects SET status=$1 WHERE id=$2", final_status, project_id)
+
+    await _save_log(pool, run_id,
+                    f"Retry {final_status}.",
+                    "INFO" if final_status == "completed" else "ERROR",
+                    "done")

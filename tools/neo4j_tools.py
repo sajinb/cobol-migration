@@ -306,6 +306,46 @@ class Neo4jTools:
         result = self.query(cypher, {"program": program})
         return result[0]["reset_count"] if result else 0
 
+    def reset_failed_paragraphs(self, program: Optional[str] = None) -> int:
+        """
+        Reset all paragraphs with status='failed' back to 'pending' so they
+        can be re-processed by the pipeline.  Optionally scoped to one program.
+        Returns the number of paragraphs reset.
+        """
+        if program:
+            cypher = """
+            MATCH (p:Paragraph {program: $program})
+            WHERE p.status = 'failed'
+            SET p.status = 'pending', p.error = '', p.updated = timestamp()
+            RETURN count(p) AS reset_count
+            """
+            result = self.query(cypher, {"program": program})
+        else:
+            cypher = """
+            MATCH (p:Paragraph)
+            WHERE p.status = 'failed'
+            SET p.status = 'pending', p.error = '', p.updated = timestamp()
+            RETURN count(p) AS reset_count
+            """
+            result = self.query(cypher)
+        return result[0]["reset_count"] if result else 0
+
+    def get_failed_paragraphs(self, program: Optional[str] = None) -> List[Dict]:
+        """Return all paragraphs currently in 'failed' status, optionally filtered by program."""
+        if program:
+            cypher = """
+            MATCH (p:Paragraph {program: $program, status: 'failed'})
+            RETURN p.name AS name, p.program AS program, p.error AS error
+            ORDER BY p.program, p.name
+            """
+            return self.query(cypher, {"program": program})
+        cypher = """
+        MATCH (p:Paragraph {status: 'failed'})
+        RETURN p.name AS name, p.program AS program, p.error AS error
+        ORDER BY p.program, p.name
+        """
+        return self.query(cypher)
+
     def get_pending_programs(self) -> List[Dict]:
         return self.query(
             "MATCH (prog:Program {status: 'pending'}) RETURN prog.name AS name, prog.file_path AS file_path"

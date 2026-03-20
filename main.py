@@ -205,6 +205,37 @@ def cmd_assemble(args):
     return out_path
 
 
+def cmd_retry(args):
+    """
+    Reset all failed paragraphs (optionally for one program) back to 'pending'
+    then re-run the full analyse → migrate → validate pipeline on them.
+    """
+    program = getattr(args, "program", None)
+
+    neo4j = Neo4jTools()
+    failed = neo4j.get_failed_paragraphs(program=program)
+    if not failed:
+        print("No failed paragraphs found — nothing to retry.")
+        neo4j.close()
+        return {"status": "nothing_to_retry", "reset_count": 0}
+
+    reset_count = neo4j.reset_failed_paragraphs(program=program)
+    neo4j.close()
+    print(f"Reset {reset_count} failed paragraph(s) to 'pending'.")
+
+    # Re-run the orchestrator (it will skip already-completed paragraphs)
+    agent = OrchestratorAgent()
+    programs = [program] if program else []
+    result = agent.run(
+        csv_path="",
+        cobol_source_dir="",
+        copybook_dir="",
+        programs=programs,
+    )
+    _print_report(result.get("report", {}))
+    return result
+
+
 def cmd_schema(_args):
     """Apply / verify Neo4j schema constraints and indexes."""
     neo4j = Neo4jTools()
@@ -265,6 +296,9 @@ def main():
     p_assemble = sub.add_parser("assemble", help="Assemble migrated fragments into a single @Service class file")
     p_assemble.add_argument("--program", required=True, help="Program name")
 
+    p_retry = sub.add_parser("retry", help="Reset failed paragraphs and re-run migrate+validate on them")
+    p_retry.add_argument("--program", help="Limit retry to a specific program (default: all programs)")
+
     sub.add_parser("report", help="Print migration status report from Neo4j")
     sub.add_parser("schema", help="Apply Neo4j schema constraints and indexes")
 
@@ -278,6 +312,7 @@ def main():
         "migrate": cmd_migrate,
         "validate": cmd_validate,
         "assemble": cmd_assemble,
+        "retry": cmd_retry,
         "report": cmd_report,
         "schema": cmd_schema,
     }

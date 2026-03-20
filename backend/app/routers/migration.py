@@ -1,14 +1,15 @@
 import asyncio
 import json
 from datetime import datetime
+from typing import Optional
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
 from ..database import get_pool
 from ..schemas import MigrationRunResponse, MigrationLogResponse
-from ..services.migration_service import run_migration
+from ..services.migration_service import run_migration, run_retry
 
 router = APIRouter(prefix="/api/projects", tags=["migration"])
 
@@ -49,6 +50,35 @@ async def start_migration(
 
     background_tasks.add_task(run_migration, pool, run_id, proj_id, cobol_dir, copy_dir)
     return _run_row(run)
+
+
+@router.post("/{project_id}/runs/{run_id}/retry", response_model=MigrationRunResponse, status_code=201)
+async def retry_failed(
+    project_id: str,
+    run_id: str,
+    background_tasks: BackgroundTasks,
+    program: Optional[str] = Query(default=None, description="Limit retry to a specific program"),
+    pool: asyncpg.Pool = Depends(get_pool),
+):
+    """Create a new run that resets all failed paragraphs and re-migrates them."""
+    original = await pool.fetchrow(
+        "SELECT * FROM migration_runs WHERE id=$1 AND project_id=$2", run_id, project_id
+    )
+    if not original:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if original["status"] not in ("failed", "completed"):
+        raise HTTPException(status_code=409, detail="Can only retry a completed or failed run")
+
+    project = await pool.fetchrow("SELECT * FROM projects WHERE id=$1", project_id)
+    if project["status"] == "migrating":
+        raise HTTPException(status_code=409, detail="Migration already in progress")
+
+    retry_run = await pool.fetchrow(
+        "INSERT INTO migration_runs (project_id) VALUES ($1) RETURNING *",
+        project_id,
+    )
+    background_tasks.add_task(run_retry, pool, str(retry_run["id"]), project_id, program)
+    return _run_row(retry_run)
 
 
 @router.get("/{project_id}/runs", response_model=list[MigrationRunResponse])
