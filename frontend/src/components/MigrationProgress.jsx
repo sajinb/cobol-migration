@@ -41,7 +41,7 @@ function StepBar({ activeStep, status }) {
   )
 }
 
-export default function MigrationProgress({ projectId, runId, initialStatus }) {
+export default function MigrationProgress({ projectId, runId, initialStatus, onComplete }) {
   const [logs, setLogs]         = useState([])
   const [status, setStatus]     = useState(initialStatus || 'running')
   const [activeStep, setActive] = useState('mapa')
@@ -65,7 +65,7 @@ export default function MigrationProgress({ projectId, runId, initialStatus }) {
         setLogs(prev => [...prev, log])
         if (log.step) setActive(log.step)
       },
-      (result) => setStatus(result.status),
+      (result) => { setStatus(result.status); onComplete?.() },
       () => {},
     )
     return close

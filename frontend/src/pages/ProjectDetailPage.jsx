@@ -32,9 +32,13 @@ export default function ProjectDetailPage() {
     const [p, r] = await Promise.all([getProject(id), getRuns(id)])
     setProj(p)
     setRuns(r)
-    // If there's a running run, show it
-    const running = r.find(r => r.status === 'running' || r.status === 'pending')
-    if (running) setActive(running)
+    const running = r.find(run => run.status === 'running' || run.status === 'pending')
+    if (running) {
+      setActive(running)
+    } else {
+      // Sync activeRun to its latest status from the fresh fetch
+      setActive(prev => prev ? (r.find(run => run.id === prev.id) ?? prev) : null)
+    }
   }
 
   useEffect(() => {
@@ -134,6 +138,7 @@ export default function ProjectDetailPage() {
             projectId={id}
             runId={activeRun.id}
             initialStatus={activeRun.status}
+            onComplete={reload}
           />
         </div>
       )}
