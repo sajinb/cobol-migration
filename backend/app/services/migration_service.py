@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import subprocess
 import sys
 import traceback
 from datetime import datetime, timezone
@@ -58,14 +59,54 @@ def _subprocess_env(settings) -> dict:
     return env
 
 
-def _subprocess_kwargs() -> dict:
-    """Extra kwargs for asyncio.create_subprocess_exec to handle platform quirks."""
-    kwargs = {}
+async def _run_subprocess(cmd: list, cwd: str, env: dict, line_cb) -> int:
+    """
+    Run cmd as a subprocess and call line_cb(text) for each output line.
+    Returns the process exit code.
+
+    Uses subprocess.Popen in a thread-pool executor instead of
+    asyncio.create_subprocess_exec so it works on Windows SelectorEventLoop
+    (uvicorn on Windows does not always use ProactorEventLoop even though
+    Python 3.8+ sets it as the default policy — the policy set at import
+    time can be overridden by uvicorn before the event loop is created).
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    popen_kwargs: dict = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "cwd":    cwd,
+        "env":    env,
+    }
     if sys.platform == "win32":
-        # Suppress the console window that Windows would otherwise open for each subprocess
-        import subprocess as _sp
-        kwargs["creationflags"] = _sp.CREATE_NO_WINDOW
-    return kwargs
+        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+    def _reader() -> int:
+        try:
+            proc = subprocess.Popen(cmd, **popen_kwargs)
+            for raw in proc.stdout:
+                loop.call_soon_threadsafe(queue.put_nowait, raw)
+            proc.stdout.close()
+            return proc.wait()
+        except Exception as exc:
+            msg = f"[runner] {type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+            loop.call_soon_threadsafe(queue.put_nowait, msg.encode())
+            return -1
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, None)  # sentinel
+
+    future = loop.run_in_executor(None, _reader)
+
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+        text = item.decode("utf-8", errors="replace").rstrip()
+        if text:
+            await line_cb(text)
+
+    return await future
 
 
 async def _save_log(pool: asyncpg.Pool, run_id: str, message: str,
@@ -94,26 +135,15 @@ async def run_migration(pool: asyncpg.Pool, run_id: str, project_id: str,
         cmd += ["--copy", copybook_dir]
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=settings.COBOL_MIGRATION_DIR,
-            env=_subprocess_env(settings),
-            **_subprocess_kwargs(),
-        )
+        async def _log(text):
+            await _save_log(pool, run_id, text, _parse_level(text), _parse_step(text))
 
-        async for raw in proc.stdout:
-            text = raw.decode("utf-8", errors="replace").rstrip()
-            if text:
-                await _save_log(pool, run_id, text, _parse_level(text), _parse_step(text))
-
-        await proc.wait()
-        final_status = "completed" if proc.returncode == 0 else "failed"
-        if proc.returncode != 0:
+        returncode = await _run_subprocess(cmd, settings.COBOL_MIGRATION_DIR,
+                                           _subprocess_env(settings), _log)
+        final_status = "completed" if returncode == 0 else "failed"
+        if returncode != 0:
             await _save_log(pool, run_id,
-                            f"Process exited with code {proc.returncode}",
-                            "ERROR", "error")
+                            f"Process exited with code {returncode}", "ERROR", "error")
 
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
@@ -152,26 +182,15 @@ async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
         cmd += ["--program", program]
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=settings.COBOL_MIGRATION_DIR,
-            env=_subprocess_env(settings),
-            **_subprocess_kwargs(),
-        )
+        async def _log(text):
+            await _save_log(pool, run_id, text, _parse_level(text), _parse_step(text))
 
-        async for raw in proc.stdout:
-            text = raw.decode("utf-8", errors="replace").rstrip()
-            if text:
-                await _save_log(pool, run_id, text, _parse_level(text), _parse_step(text))
-
-        await proc.wait()
-        final_status = "completed" if proc.returncode == 0 else "failed"
-        if proc.returncode != 0:
+        returncode = await _run_subprocess(cmd, settings.COBOL_MIGRATION_DIR,
+                                           _subprocess_env(settings), _log)
+        final_status = "completed" if returncode == 0 else "failed"
+        if returncode != 0:
             await _save_log(pool, run_id,
-                            f"Process exited with code {proc.returncode}",
-                            "ERROR", "error")
+                            f"Process exited with code {returncode}", "ERROR", "error")
 
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
