@@ -131,15 +131,26 @@ class FileTools:
         fields: List[str] = []
         method_lines: List[str] = []
         section = None
+        in_companion = False   # True while inside a ===COMPANION_FILE=== block
 
         for line in code.splitlines():
             stripped = line.strip()
             if stripped == "// ===IMPORTS===":
                 section = "imports"
+                in_companion = False
             elif stripped == "// ===FIELDS===":
                 section = "fields"
+                in_companion = False
             elif stripped == "// ===METHOD===":
                 section = "method"
+                in_companion = False
+            elif stripped.startswith("// ===COMPANION_FILE:") and stripped.endswith("==="):
+                # Entering a companion block — stop feeding lines into method_lines
+                in_companion = True
+            elif stripped == "// ===END_COMPANION===":
+                in_companion = False
+            elif in_companion:
+                pass  # companion body handled by the second pass below
             elif section == "imports" and stripped.startswith("import "):
                 imports.append(stripped)
             elif section == "fields" and stripped:
