@@ -261,27 +261,30 @@ class Neo4jTools:
         intent: str = "",
         error: str = "",
     ) -> None:
-        cypher = """
-        MATCH (p:Paragraph {name: $name, program: $program})
-        SET p.status         = $status,
-            p.generated_code = $generated_code,
-            p.complexity     = $complexity,
-            p.intent         = $intent,
-            p.error          = $error,
-            p.updated        = timestamp()
+        # Build SET clauses dynamically so that callers who don't pass a field
+        # (e.g. analysis doesn't pass generated_code) never overwrite existing
+        # values with empty strings.
+        params: Dict[str, Any] = {"name": name, "program": program, "status": status}
+        set_clauses = ["p.status = $status", "p.updated = timestamp()"]
+
+        if generated_code:
+            set_clauses.append("p.generated_code = $generated_code")
+            params["generated_code"] = generated_code
+        if complexity:
+            set_clauses.append("p.complexity = $complexity")
+            params["complexity"] = complexity
+        if intent:
+            set_clauses.append("p.intent = $intent")
+            params["intent"] = intent
+        if error:
+            set_clauses.append("p.error = $error")
+            params["error"] = error
+
+        cypher = f"""
+        MATCH (p:Paragraph {{name: $name, program: $program}})
+        SET {', '.join(set_clauses)}
         """
-        self.write(
-            cypher,
-            {
-                "name": name,
-                "program": program,
-                "status": status,
-                "generated_code": generated_code,
-                "complexity": complexity,
-                "intent": intent,
-                "error": error,
-            },
-        )
+        self.write(cypher, params)
 
     def update_program_status(self, name: str, status: str) -> None:
         cypher = """
