@@ -202,18 +202,55 @@ class MapaRunner:
                 logger.warning("CallTree.jar stderr:\n%s", proc.stderr.strip())
 
             if proc.returncode != 0:
-                return {
-                    "success": False,
-                    "csv_path": "",
-                    "returncode": proc.returncode,
-                    "stdout": proc.stdout,
-                    "stderr": proc.stderr,
-                    "row_count": 0,
-                    "error": (
-                        f"CallTree.jar exited with code {proc.returncode}. "
-                        f"stderr: {proc.stderr[:500]}"
-                    ),
-                }
+                # If we used a -copy flag and the JAR crashed (a known bug in
+                # some CallTree.jar versions where CopyStatement.apply() throws
+                # StringIndexOutOfBoundsException on certain copybook content),
+                # retry without the -copy flag.  MAPA still produces a valid
+                # result.csv covering programs, paragraphs, CALL/PERFORM chains
+                # and data items — it just won't expand COPY statements inline.
+                if copybook_dir:
+                    logger.warning(
+                        "CallTree.jar failed (rc=%d) with -copy flag — "
+                        "retrying without -copy as fallback. "
+                        "COPY statements will be recorded unexpanded.",
+                        proc.returncode,
+                    )
+                    cmd_no_copy = self._build_command(
+                        flist_path, csv_path, None, extra_args or []
+                    )
+                    logger.info(
+                        "MAPA retry command: %s", " ".join(str(c) for c in cmd_no_copy)
+                    )
+                    try:
+                        proc = subprocess.run(
+                            cmd_no_copy,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=600,
+                        )
+                    except Exception as exc:
+                        return self._error(f"Subprocess error on retry: {exc}")
+
+                    if proc.stdout.strip():
+                        logger.info("CallTree.jar retry stdout:\n%s", proc.stdout.strip())
+                    if proc.stderr.strip():
+                        logger.warning("CallTree.jar retry stderr:\n%s", proc.stderr.strip())
+
+                if proc.returncode != 0:
+                    return {
+                        "success": False,
+                        "csv_path": "",
+                        "returncode": proc.returncode,
+                        "stdout": proc.stdout,
+                        "stderr": proc.stderr,
+                        "row_count": 0,
+                        "error": (
+                            f"CallTree.jar exited with code {proc.returncode}. "
+                            f"stderr: {proc.stderr[:500]}"
+                        ),
+                    }
 
             # 6. Validate output
             if not csv_path.exists():
