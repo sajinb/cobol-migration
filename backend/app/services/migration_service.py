@@ -13,15 +13,30 @@ from ..config import get_settings
 # Log line format:  2024-01-01 12:00:00  INFO      agents.migration_agent — msg
 _LOG_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+(\w+)\s+(\S+)\s+[—-]")
 
+# Map logger module name fragments → UI step name.
+# Modules not listed here return step=None (frontend keeps the last known step).
 _STEP_MAP = {
+    "ingestion":    "ingest",
+    "importer":     "ingest",
+    "schema":       "ingest",   # graph.schema runs during ingestion
+    "file_tools":   "ingest",   # CSV parsing + source file reads
+    "cobol_parser": "ingest",   # source-parse pass in the importer
+    "analysis":     "analyse",
+    "migration":    "migrate",
+    "validation":   "validate",
+    "mapa":         "mapa",
+}
+
+# Orchestrator emits "[Orchestrator] Starting X phase" — use that to drive
+# step transitions because sub-agent INFO logs are sparse during normal runs.
+_ORCH_PHASE_RE = re.compile(
+    r"\[Orchestrator\]\s+Starting\s+(\w+)\s+phase", re.IGNORECASE
+)
+_ORCH_PHASE_MAP = {
     "ingestion":  "ingest",
     "analysis":   "analyse",
     "migration":  "migrate",
     "validation": "validate",
-    "mapa":       "mapa",
-    "importer":   "ingest",
-    # orchestrator logs span all phases — do not map to a stage so the last
-    # known sub-agent stage remains active in the UI.
 }
 
 
@@ -39,11 +54,21 @@ def _parse_level(line: str) -> str:
 
 def _parse_step(line: str) -> str | None:
     m = _LOG_RE.match(line)
-    if m:
-        module = m.group(2).lower()
-        for keyword, step in _STEP_MAP.items():
-            if keyword in module:
-                return step
+    if not m:
+        return None
+    module = m.group(2).lower()
+    # Orchestrator phase-start messages are the most reliable signal for when
+    # the pipeline enters a new stage (sub-agent INFO logs are sparse during
+    # normal successful runs).
+    if "orchestrator" in module:
+        om = _ORCH_PHASE_RE.search(line)
+        if om:
+            return _ORCH_PHASE_MAP.get(om.group(1).lower())
+        # Other orchestrator messages don't change the active step.
+        return None
+    for keyword, step in _STEP_MAP.items():
+        if keyword in module:
+            return step
     return None
 
 
