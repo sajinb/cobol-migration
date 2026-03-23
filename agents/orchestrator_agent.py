@@ -216,6 +216,14 @@ def _run_validation(state: OrchestratorState) -> OrchestratorState:
     migrated = neo4j.get_paragraphs_by_status("migrated")
     neo4j.close()
 
+    # Scope validation to only the programs from this pipeline run.
+    # Without this filter, paragraphs from previous runs (e.g. MEGADEMO) that
+    # are still in "migrated" status get re-assembled into the current project's
+    # output directory.
+    if state.get("programs_to_migrate"):
+        program_set = set(state["programs_to_migrate"])
+        migrated = [r for r in migrated if r["program"] in program_set]
+
     val_agent = ValidationAgent()
     mig_agent = MigrationAgent()
     new_retry_queue = []

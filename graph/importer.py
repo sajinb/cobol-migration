@@ -351,6 +351,13 @@ class MapaCsvImporter:
         MERGE (p)-[:WRITES]->(d)
         """
 
+        _UPSERT_COPYBOOK = """
+        MERGE (c:Copybook {name: $name})
+        WITH c
+        MATCH (prog:Program {name: $program})
+        MERGE (prog)-[:COPIES]->(c)
+        """
+
         for pgm_name, file_path in program_files.items():
             if not file_path:
                 continue
@@ -428,6 +435,18 @@ class MapaCsvImporter:
                         "para": para.name, "data_item": item_name, "program": pgm_name,
                     }))
                     extra["relationships"] += 1
+
+            # ── COPY members → Copybook nodes + COPIES edges ───────────
+            # CobolParser extracts COPY <member> statements from the .cbl source.
+            # This path fires when MAPA CSV has no COPY records (e.g. custom CSV
+            # or programs not included in MAPA's call-tree scan).
+            for member in parse_result.copies:
+                batch.append((_UPSERT_COPYBOOK, {
+                    "name": member,
+                    "program": pgm_name,
+                }))
+                extra["relationships"] += 1
+                logger.debug("COPIES (source-parse): %s → %s", pgm_name, member)
 
             # ── WORKING-STORAGE items (program-level DataItem nodes) ───
             for di in parse_result.data_items:

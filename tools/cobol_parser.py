@@ -64,6 +64,7 @@ class CobolParseResult:
     source_path: str = ""
     paragraphs: List[ParagraphInfo] = field(default_factory=list)
     data_items: List[DataItemInfo] = field(default_factory=list)
+    copies: List[str] = field(default_factory=list)   # COPY member names found in source
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -155,6 +156,10 @@ class CobolParser:
         re.IGNORECASE,
     )
 
+    # COPY <member-name> [REPLACING …] .
+    # Matches both  COPY EMPREC.  and  COPY EMPREC REPLACING …
+    _COPY_STMT = re.compile(r'\bCOPY\s+([A-Z0-9][A-Z0-9-]*)', re.IGNORECASE)
+
     # ── Public API ────────────────────────────────────────────────────── #
 
     def parse(self, cobol_path: str) -> CobolParseResult:
@@ -171,12 +176,13 @@ class CobolParser:
         result.source_path = str(path)
 
         logger.info(
-            "Parsed %-30s  format=%-5s  program=%-12s  paragraphs=%d  data_items=%d",
+            "Parsed %-30s  format=%-5s  program=%-12s  paragraphs=%d  data_items=%d  copies=%d",
             path.name,
             "fixed" if fixed else "free",
             result.program_name or "(unknown)",
             len(result.paragraphs),
             len(result.data_items),
+            len(result.copies),
         )
         return result
 
@@ -272,6 +278,15 @@ class CobolParser:
                 if current_para:
                     current_para.source_lines.append(raw_line)
                 continue
+
+            # ── COPY statement detection (DATA and PROCEDURE divisions) ─
+            copy_m = self._COPY_STMT.search(stmt)
+            if copy_m:
+                member = copy_m.group(1).upper()
+                if member not in result.copies:
+                    result.copies.append(member)
+                # Keep processing — COPY lines in DATA div also appear as
+                # data-item context that the rest of the loop should skip.
 
             # ── Division / section boundary detection ──────────────────
             if self._IDENTIFICATION_DIV.search(stmt):
