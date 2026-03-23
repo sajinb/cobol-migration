@@ -154,6 +154,10 @@ class MapaRunner:
 
         logger.info("Running CallTree.jar on %d COBOL file(s) in %s", len(cobol_files), cobol_path)
 
+        # copy_deps accumulates COPY member names extracted during preprocessing;
+        # populated only when the retry path is taken (original MAPA run fails).
+        copy_deps: Dict[str, List[str]] = {}
+
         # 3. Ensure output directory exists
         csv_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -226,7 +230,7 @@ class MapaRunner:
                         "bypass CopyStatement.apply() crash.",
                         proc.returncode,
                     )
-                    preprocessed_files, copy_deps = self._preprocess_copy_statements(
+                    preprocessed_files, copy_deps = self._preprocess_copy_statements(  # noqa: F841
                         cobol_files, preprocessed_dir
                     )
                     if copy_deps:
@@ -327,6 +331,10 @@ class MapaRunner:
                 "stderr": proc.stderr,
                 "row_count": row_count,
                 "error": "",
+                # Populated when the COPY-neutralisation retry was taken.
+                # Maps program_name → [copybook_member, ...] so the caller
+                # can write COPIES edges to Neo4j independently of MAPA's CSV.
+                "copy_deps": copy_deps,
             }
         finally:
             # Clean up the temp file-list

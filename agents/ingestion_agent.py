@@ -16,7 +16,7 @@ Pipeline:
 
 import logging
 import os
-from typing import Annotated, Dict, TypedDict
+from typing import Annotated, Dict, List, TypedDict
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
@@ -45,6 +45,12 @@ class IngestionState(TypedDict):
     counts: Dict[str, int]
     status: str
     error: str
+    # Populated when MAPA's COPY-neutralisation retry fires; forwarded to the
+    # importer so it can write Copybook nodes + COPIES edges without the CSV.
+    copy_deps: Dict[str, List[str]]
+    # Names of Program nodes written during this ingestion run — used by the
+    # orchestrator to scope analysis/migration to only fresh programs.
+    ingested_programs: List[str]
 
 
 # ------------------------------------------------------------------ #
@@ -92,6 +98,9 @@ def _run_mapa(state: IngestionState) -> IngestionState:
     return {
         **state,
         "status": "mapa_done",
+        # Carry any COPY dependencies extracted during COPY-neutralisation retry
+        # so _ingest_csv can create Copybook nodes + COPIES edges from them.
+        "copy_deps": result.get("copy_deps", {}),
         "messages": [
             AIMessage(
                 content=f"MAPA completed. Generated {state['csv_path']} with {row_count} rows."
@@ -145,14 +154,29 @@ def _apply_schema_node(state: IngestionState) -> IngestionState:
 
 
 def _ingest_csv(state: IngestionState) -> IngestionState:
-    """Run the MAPA CSV importer."""
+    """Run the MAPA CSV importer, then wire in any COPY deps from the retry."""
     if state["status"] == "failed":
         return state
     try:
         neo4j = Neo4jTools()
         importer = MapaCsvImporter(neo4j, state["cobol_source_dir"])
         counts = importer.run(state["csv_path"])
+
+        # If the MAPA run took the COPY-neutralisation retry path, the CSV has
+        # no COPY records — ingest them from the extracted copy_deps instead.
+        copy_deps = state.get("copy_deps") or {}
+        if copy_deps:
+            copy_counts = importer.ingest_copy_deps(copy_deps, state["copybook_dir"])
+            counts["copybooks"] = counts.get("copybooks", 0) + copy_counts["copybooks"]
+            counts["data_items"] = counts.get("data_items", 0) + copy_counts["data_items"]
+            counts["relationships"] = counts.get("relationships", 0) + copy_counts["relationships"]
+            logger.info(
+                "copy_deps ingested — copybooks=%d  data_items=%d",
+                copy_counts["copybooks"], copy_counts["data_items"],
+            )
+
         neo4j.close()
+        ingested_programs: List[str] = counts.pop("program_names", [])
         summary = (
             f"Ingestion complete — "
             f"programs: {counts['programs']}, "
@@ -162,6 +186,7 @@ def _ingest_csv(state: IngestionState) -> IngestionState:
         return {
             **state,
             "counts": counts,
+            "ingested_programs": ingested_programs,
             "status": "ingested",
             "messages": [AIMessage(content=summary)],
         }
@@ -268,6 +293,8 @@ class IngestionAgent:
             "counts": {},
             "status": "starting",
             "error": "",
+            "copy_deps": {},
+            "ingested_programs": [],
         }
         final_state = self._graph.invoke(initial_state)
         return final_state

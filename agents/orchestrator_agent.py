@@ -74,10 +74,22 @@ def _run_ingestion(state: OrchestratorState) -> OrchestratorState:
             "messages": [AIMessage(content=f"Ingestion failed: {result.get('error', '')}")],
         }
     counts = result.get("counts", {})
+    ingested_programs = result.get("ingested_programs", [])
+
+    # Scope subsequent phases to ONLY the programs ingested in this run.
+    # Without this, get_all_programs() would return every Program node ever
+    # written to Neo4j — including stale programs from previous pipeline runs.
+    programs_to_migrate = (
+        ingested_programs
+        if ingested_programs
+        else state.get("programs_to_migrate", [])
+    )
+
     return {
         **state,
         "ingestion_done": True,
         "status": "ingested",
+        "programs_to_migrate": programs_to_migrate,
         "messages": [
             AIMessage(
                 content=f"Ingestion complete. Programs: {counts.get('programs', 0)}, "

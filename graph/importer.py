@@ -17,7 +17,7 @@ UUID linkage:
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from tools.neo4j_tools import Neo4jTools
 from tools.file_tools import FileTools
@@ -189,7 +189,98 @@ class MapaCsvImporter:
             counts["datasets"],
             counts["relationships"],
         )
+        # Also return the exact program names that were written so callers can
+        # scope the next pipeline stages to only the freshly-ingested programs.
+        counts["program_names"] = sorted(seen_programs)
         return counts
+
+    # ------------------------------------------------------------------ #
+    #  Copybook ingestion (COPY-neutralised retry path)                   #
+    # ------------------------------------------------------------------ #
+
+    def ingest_copy_deps(
+        self,
+        copy_deps: Dict[str, List[str]],
+        copybook_dir: str = "",
+    ) -> Dict[str, int]:
+        """
+        Create Copybook nodes + COPIES relationships from *copy_deps* and
+        optionally parse each .cpy file for its data items.
+
+        *copy_deps* has the shape produced by
+        ``MapaRunner._preprocess_copy_statements``:
+            {"EMPPROG": ["EMPREC"], ...}
+
+        Copybook files are looked up (case-insensitively) in *copybook_dir*,
+        falling back to the importer's source directory.  When a .cpy file is
+        found its data items are added to Neo4j linked to the Copybook node.
+
+        Returns counts of copybooks and data_items written.
+        """
+        from tools.cobol_parser import CobolParser
+
+        counts = {"copybooks": 0, "data_items": 0, "relationships": 0}
+        if not copy_deps:
+            return counts
+
+        parser = CobolParser()
+        search_dirs: List[Path] = []
+        if copybook_dir and Path(copybook_dir).is_dir():
+            search_dirs.append(Path(copybook_dir))
+        if self._source_dir and self._source_dir.is_dir():
+            if self._source_dir not in search_dirs:
+                search_dirs.append(self._source_dir)
+
+        for program_name, members in copy_deps.items():
+            for member in members:
+                # Create Copybook node + COPIES edge
+                self._neo4j.upsert_copybook(member, program_name)
+                counts["copybooks"] += 1
+                counts["relationships"] += 1
+                logger.debug("COPIES (from copy_deps): %s → %s", program_name, member)
+
+                # Try to find and parse the .cpy file
+                cpy_file = self._find_copybook_file(member, search_dirs)
+                if not cpy_file:
+                    continue
+
+                try:
+                    result = parser.parse(str(cpy_file))
+                    for item in result.data_items:
+                        # Link data items to the Program (standard schema) so
+                        # Graph RAG queries that traverse HAS_DATA_ITEM from
+                        # the Program node pick them up.
+                        self._neo4j.upsert_data_item(
+                            item.name, program_name,
+                            pic_type=item.pic_type, level=item.level,
+                        )
+                        counts["data_items"] += 1
+                    logger.info(
+                        "Parsed copybook %s — %d data items added for program %s",
+                        cpy_file.name, len(result.data_items), program_name,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not parse copybook %s: %s", cpy_file, exc
+                    )
+
+        counts["relationships"] += counts["data_items"]
+        return counts
+
+    @staticmethod
+    def _find_copybook_file(member: str, search_dirs: List[Path]) -> Optional[Path]:
+        """Return the first .cpy file matching *member* (case-insensitive)."""
+        for d in search_dirs:
+            for ext in (".cpy", ".CPY", ".copy", ".COPY"):
+                candidate = d / f"{member}{ext}"
+                if candidate.exists():
+                    return candidate
+                # Also try with program-name casing variants
+                for name_variant in (member.lower(), member.upper()):
+                    candidate = d / f"{name_variant}{ext}"
+                    if candidate.exists():
+                        return candidate
+        return None
 
     # ------------------------------------------------------------------ #
     #  Pass 2: COBOL source parser                                         #
