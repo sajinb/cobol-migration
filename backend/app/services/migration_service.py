@@ -77,6 +77,11 @@ def _subprocess_env(
     if cobol_dir:
         env["COBOL_SOURCE_DIR"] = cobol_dir
         env["MAPA_CSV_PATH"] = str(_Path(cobol_dir) / "result.csv")
+        # Default copybook dir to the COBOL source dir itself so that
+        # co-located .cpy files are found even when the project DB row has
+        # copybook_dir=NULL.  An explicit --copy CLI arg still takes precedence
+        # because OrchestratorAgent.run() uses "copybook_dir or settings.MAPA_COPYBOOK_DIR".
+        env["MAPA_COPYBOOK_DIR"] = cobol_dir
 
     if project_dir:
         env["OUTPUT_DIR"] = str(_Path(project_dir) / "output")

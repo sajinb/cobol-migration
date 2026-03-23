@@ -19,7 +19,13 @@ async def clone_repo(github_url: str, dest: Path) -> None:
 
 
 def detect_dirs(base: Path) -> tuple[str, str | None]:
-    """Return (cobol_dir, copybook_dir) by scanning common folder names."""
+    """Return (cobol_dir, copybook_dir) by scanning common folder names.
+
+    Detection order for copybook_dir:
+    1. A named subdirectory (copybooks/, copy/, copybook/, cpy/)
+    2. The cobol_dir itself when .cpy/.CPY files are found directly inside it
+       (handles the common case where copybooks are co-located with source)
+    """
     cobol_candidates = ["cobol", "src", "cbl", "programs"]
     copy_candidates  = ["copybooks", "copy", "copybook", "cpy"]
 
@@ -37,5 +43,13 @@ def detect_dirs(base: Path) -> tuple[str, str | None]:
         if candidate.is_dir():
             copybook_dir = str(candidate)
             break
+
+    # If no dedicated copybook subdirectory was found, check whether .cpy files
+    # live directly inside cobol_dir (co-located pattern).
+    if copybook_dir is None:
+        cobol_path = Path(cobol_dir)
+        has_cpy = any(cobol_path.glob("*.cpy")) or any(cobol_path.glob("*.CPY"))
+        if has_cpy:
+            copybook_dir = cobol_dir
 
     return cobol_dir, copybook_dir
