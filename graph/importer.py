@@ -269,14 +269,30 @@ class MapaCsvImporter:
 
     @staticmethod
     def _find_copybook_file(member: str, search_dirs: List[Path]) -> Optional[Path]:
-        """Return the first .cpy file matching *member* (case-insensitive)."""
+        """
+        Return the first .cpy file matching *member* (case-insensitive).
+
+        For each dir in *search_dirs* the method also checks common copybook
+        subdirectory names (copy/, copybooks/, cpy/, CPY/) so that moving
+        copybooks into a subdirectory is handled automatically.
+        """
+        _COMMON_SUBDIRS = ("copy", "copybooks", "cpy", "CPY", "COPY")
+        _EXTENSIONS = (".cpy", ".CPY", ".copy", ".COPY")
+        _NAME_VARIANTS = (member, member.lower(), member.upper())
+
+        # Expand each search dir with its common subdirectory variants
+        expanded: List[Path] = []
         for d in search_dirs:
-            for ext in (".cpy", ".CPY", ".copy", ".COPY"):
-                candidate = d / f"{member}{ext}"
-                if candidate.exists():
-                    return candidate
-                # Also try with program-name casing variants
-                for name_variant in (member.lower(), member.upper()):
+            if d not in expanded:
+                expanded.append(d)
+            for sub in _COMMON_SUBDIRS:
+                sub_dir = d / sub
+                if sub_dir.is_dir() and sub_dir not in expanded:
+                    expanded.append(sub_dir)
+
+        for d in expanded:
+            for ext in _EXTENSIONS:
+                for name_variant in _NAME_VARIANTS:
                     candidate = d / f"{name_variant}{ext}"
                     if candidate.exists():
                         return candidate
@@ -357,6 +373,9 @@ class MapaCsvImporter:
         MATCH (prog:Program {name: $program})
         MERGE (prog)-[:COPIES]->(c)
         """
+
+        # Search dirs for .cpy files: source dir + common copybook subdirs
+        cpy_search_dirs: List[Path] = [self._source_dir] if self._source_dir.is_dir() else []
 
         for pgm_name, file_path in program_files.items():
             if not file_path:
@@ -447,6 +466,29 @@ class MapaCsvImporter:
                 }))
                 extra["relationships"] += 1
                 logger.debug("COPIES (source-parse): %s → %s", pgm_name, member)
+
+                # Parse the .cpy file for its DataItem declarations so that
+                # Graph RAG context includes field-level details (EMP-ID etc.)
+                # even when ingest_copy_deps() was not called (i.e. MAPA ran
+                # successfully on the first attempt with no copy-neutralisation).
+                cpy_file = self._find_copybook_file(member, cpy_search_dirs)
+                if cpy_file:
+                    try:
+                        cpy_result = self._cobol_parser.parse(str(cpy_file))
+                        for di in cpy_result.data_items:
+                            batch.append((_UPSERT_DATA_ITEM, {
+                                "name": di.name, "program": pgm_name,
+                                "pic_type": di.pic, "level": di.level,
+                            }))
+                            extra["data_items"] += 1
+                        logger.info(
+                            "Parsed copybook %s — %d data items added for %s",
+                            cpy_file.name, len(cpy_result.data_items), pgm_name,
+                        )
+                    except Exception as exc:
+                        logger.warning("Could not parse copybook %s: %s", cpy_file, exc)
+                else:
+                    logger.debug("Copybook file not found for member %s", member)
 
             # ── WORKING-STORAGE items (program-level DataItem nodes) ───
             for di in parse_result.data_items:
