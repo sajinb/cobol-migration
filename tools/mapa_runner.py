@@ -203,51 +203,85 @@ class MapaRunner:
                 logger.warning("CallTree.jar stderr:\n%s", proc.stderr.strip())
 
             if proc.returncode != 0:
-                # CallTree.jar REQUIRES -copy / -copyList — omitting them causes
-                # it to print usage and exit with rc=16.  Instead, retry with a
-                # temporary *empty* copybook directory.  MAPA will scan it, find
-                # no copybooks, and skip CopyStatement.apply() entirely — which
-                # avoids the StringIndexOutOfBoundsException bug present in some
-                # JAR versions.  Programs/paragraphs/CALL chains are still emitted
-                # fully; only COPY expansions are left as unresolved references.
-                if copybook_dir:
-                    empty_copy_dir = Path(tempfile.mkdtemp(prefix="mapa_empty_copy_"))
-                    try:
-                        logger.warning(
-                            "CallTree.jar failed (rc=%d) — retrying with an empty "
-                            "copybook directory to bypass CopyStatement crash. "
-                            "COPY statements will be recorded unexpanded.",
-                            proc.returncode,
-                        )
-                        cmd_empty_copy = self._build_command(
-                            flist_path, csv_path, str(empty_copy_dir), extra_args or []
-                        )
+                # ---------------------------------------------------------- #
+                # Root cause: a bug in some CallTree.jar builds where         #
+                # CopyStatement.apply() performs substring(0, indexOf(x)-1)  #
+                # and indexOf returns 0, giving substring(0,-1) → crash.     #
+                #                                                             #
+                # Fix: preprocess the COBOL sources into a temp directory,   #
+                # replacing every COPY statement with CONTINUE. (a valid     #
+                # COBOL no-op). MAPA never constructs a CopyStatement, so    #
+                # apply() is never called.  CALL/PERFORM chains, paragraph   #
+                # structure and data items are still fully captured.  COPY   #
+                # dependencies are extracted separately from the original    #
+                # sources and returned alongside the CSV path so the         #
+                # ingestion agent can add them to Neo4j directly.            #
+                # ---------------------------------------------------------- #
+                preprocessed_dir = Path(tempfile.mkdtemp(prefix="mapa_preprocessed_"))
+                preprocessed_flist = None
+                try:
+                    logger.warning(
+                        "CallTree.jar failed (rc=%d) with original sources — "
+                        "retrying with COPY-neutralised preprocessed copies to "
+                        "bypass CopyStatement.apply() crash.",
+                        proc.returncode,
+                    )
+                    preprocessed_files, copy_deps = self._preprocess_copy_statements(
+                        cobol_files, preprocessed_dir
+                    )
+                    if copy_deps:
                         logger.info(
-                            "MAPA retry command: %s",
-                            " ".join(str(c) for c in cmd_empty_copy),
+                            "Extracted %d COPY dependencies from original sources: %s",
+                            sum(len(v) for v in copy_deps.values()),
+                            copy_deps,
                         )
-                        try:
-                            proc = subprocess.run(
-                                cmd_empty_copy,
-                                capture_output=True,
-                                text=True,
-                                encoding="utf-8",
-                                errors="replace",
-                                timeout=600,
-                            )
-                        except Exception as exc:
-                            return self._error(f"Subprocess error on retry: {exc}")
 
-                        if proc.stdout.strip():
-                            logger.info(
-                                "CallTree.jar retry stdout:\n%s", proc.stdout.strip()
+                    # Write a new file-list for the preprocessed copies
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        suffix=".txt",
+                        delete=False,
+                        prefix="mapa_filelist_pre_",
+                        encoding="utf-8",
+                    ) as pflist:
+                        pflist.write(
+                            "\n".join(
+                                Path(p).resolve().as_posix() for p in preprocessed_files
                             )
-                        if proc.stderr.strip():
-                            logger.warning(
-                                "CallTree.jar retry stderr:\n%s", proc.stderr.strip()
-                            )
-                    finally:
-                        shutil.rmtree(empty_copy_dir, ignore_errors=True)
+                        )
+                        preprocessed_flist = pflist.name
+
+                    cmd_pre = self._build_command(
+                        preprocessed_flist, csv_path, copybook_dir, extra_args or []
+                    )
+                    logger.info(
+                        "MAPA retry command (preprocessed): %s",
+                        " ".join(str(c) for c in cmd_pre),
+                    )
+                    try:
+                        proc = subprocess.run(
+                            cmd_pre,
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            timeout=600,
+                        )
+                    except Exception as exc:
+                        return self._error(f"Subprocess error on preprocessed retry: {exc}")
+
+                    if proc.stdout.strip():
+                        logger.info(
+                            "CallTree.jar retry stdout:\n%s", proc.stdout.strip()
+                        )
+                    if proc.stderr.strip():
+                        logger.warning(
+                            "CallTree.jar retry stderr:\n%s", proc.stderr.strip()
+                        )
+                finally:
+                    if preprocessed_flist:
+                        Path(preprocessed_flist).unlink(missing_ok=True)
+                    shutil.rmtree(preprocessed_dir, ignore_errors=True)
 
                 if proc.returncode != 0:
                     return {
@@ -389,6 +423,84 @@ class MapaRunner:
             )
 
         return {"success": True, "error": ""}
+
+    # ------------------------------------------------------------------ #
+    #  COBOL preprocessor                                                  #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _preprocess_copy_statements(
+        cobol_files: List[Path],
+        dest_dir: Path,
+    ):
+        """
+        Write copies of *cobol_files* into *dest_dir* with every COPY statement
+        replaced by ``CONTINUE.``
+
+        This neutralises a bug in certain CallTree.jar builds where
+        ``CopyStatement.apply()`` performs ``substring(0, indexOf(x) - 1)``
+        and crashes with StringIndexOutOfBoundsException when ``indexOf``
+        returns 0 (i.e. the target token is at the very start of the string
+        MAPA happens to be processing).
+
+        Returns
+        -------
+        preprocessed_files : list[str]
+            Absolute paths of the files written to *dest_dir*.
+        copy_deps : dict[str, list[str]]
+            Mapping of ``program_name → [copybook_member, ...]`` extracted
+            from the original sources so the caller can add COPIES edges to
+            Neo4j without relying on MAPA's (now-suppressed) expansion.
+        """
+        import re
+
+        # Matches: optional leading whitespace, COPY, whitespace, member name
+        # (anything up to the statement-terminating period), optional trailing
+        # whitespace/comment.  Handles single-line COPY statements only; for
+        # multi-line REPLACING clauses the member is still captured correctly
+        # because it always appears on the COPY line itself.
+        _COPY_RE = re.compile(
+            r"^(?P<indent>\s*)COPY\s+(?P<member>[A-Za-z0-9$#@_-]+)(?P<rest>[^.]*)\.",
+            re.IGNORECASE | re.MULTILINE,
+        )
+
+        preprocessed_files: List[str] = []
+        copy_deps: Dict[str, List[str]] = {}
+
+        for src_path in cobol_files:
+            try:
+                source = src_path.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                logger.warning("Could not read %s for preprocessing: %s", src_path, exc)
+                continue
+
+            program_name = src_path.stem.upper()
+            members_found: List[str] = []
+
+            def _replace(m: "re.Match") -> str:  # type: ignore[type-arg]
+                member = m.group("member").upper()
+                members_found.append(member)
+                indent = m.group("indent")
+                logger.debug(
+                    "Neutralising COPY %s in %s → CONTINUE.", member, src_path.name
+                )
+                return f"{indent}CONTINUE."
+
+            processed = _COPY_RE.sub(_replace, source)
+
+            if members_found:
+                copy_deps[program_name] = members_found
+
+            dest_file = dest_dir / src_path.name
+            try:
+                dest_file.write_text(processed, encoding="utf-8")
+                preprocessed_files.append(str(dest_file))
+            except OSError as exc:
+                logger.warning(
+                    "Could not write preprocessed %s: %s", dest_file, exc
+                )
+
+        return preprocessed_files, copy_deps
 
     # ------------------------------------------------------------------ #
     #  Command builder                                                     #
