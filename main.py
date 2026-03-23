@@ -74,6 +74,11 @@ def cmd_full_pipeline(args):
         programs=programs,
     )
     _print_report(result.get("report", {}))
+    if result.get("status") == "failed":
+        logging.getLogger(__name__).error(
+            "Pipeline failed: %s", result.get("error", "unknown error")
+        )
+        sys.exit(1)
     return result
 
 
@@ -233,6 +238,11 @@ def cmd_retry(args):
         programs=programs,
     )
     _print_report(result.get("report", {}))
+    if result.get("status") == "failed":
+        logging.getLogger(__name__).error(
+            "Retry failed: %s", result.get("error", "unknown error")
+        )
+        sys.exit(1)
     return result
 
 
