@@ -4,6 +4,14 @@ import { streamLogs, getLogs } from '../services/api'
 
 const STEPS = ['mapa', 'ingest', 'analyse', 'migrate', 'validate']
 
+const STEP_DESC = {
+  mapa:     'Run the MAPA static analyser to parse COBOL source files and produce the structural CSV',
+  ingest:   'Import MAPA CSV output into Neo4j — creates Program, Paragraph, DataItem and Copybook nodes',
+  analyse:  'Traverse the graph to classify paragraph complexity, detect PERFORM chains and shared data flow',
+  migrate:  'Convert each paragraph to a Java Spring Boot service method using graph context and LLM',
+  validate: 'Check generated Java code compiles, all PERFORM calls are resolved and data items are mapped',
+}
+
 const LEVEL_CLASS = {
   ERROR:   'text-red-400',
   WARNING: 'text-yellow-400',
@@ -24,15 +32,24 @@ function StepBar({ activeStep, status }) {
         const isFailed   = failed && step === activeStep
         return (
           <div key={step} className="flex items-center gap-1">
-            <span
-              className={`text-xs font-semibold px-3 py-1 rounded-full uppercase tracking-wide transition-all
-                ${isFailed  ? 'bg-red-500/20 text-red-400 border border-red-500/40' :
-                  isDone    ? 'bg-green-500/20 text-green-400 border border-green-500/40' :
-                  isActive  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40 animate-pulse' :
-                              'bg-slate-800 text-slate-500 border border-slate-700'}`}
-            >
-              {step}
-            </span>
+            <div className="relative group">
+              <span
+                className={`text-xs font-semibold px-3 py-1 rounded-full uppercase tracking-wide transition-all cursor-default
+                  ${isFailed  ? 'bg-red-500/20 text-red-400 border border-red-500/40' :
+                    isDone    ? 'bg-green-500/20 text-green-400 border border-green-500/40' :
+                    isActive  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40 animate-pulse' :
+                                'bg-slate-800 text-slate-500 border border-slate-700'}`}
+              >
+                {step}
+              </span>
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 px-3 py-2
+                              bg-slate-800 border border-slate-600 rounded-lg text-slate-300 text-xs
+                              leading-snug shadow-xl pointer-events-none
+                              opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-10">
+                {STEP_DESC[step]}
+                <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-600" />
+              </div>
+            </div>
             {i < STEPS.length - 1 && <span className="text-slate-700">→</span>}
           </div>
         )
