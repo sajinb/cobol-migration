@@ -47,16 +47,40 @@ def _parse_step(line: str) -> str | None:
     return None
 
 
-def _subprocess_env(settings) -> dict:
+def _subprocess_env(
+    settings,
+    cobol_dir: str | None = None,
+    project_dir: str | None = None,
+) -> dict:
     """
     Build an env dict for pipeline subprocesses.
-    Forwards MAPA_JAR_PATH and MAPA_AUTO_DOWNLOAD from the backend Settings
-    so the pipeline always uses the values declared here, regardless of what
-    the pipeline's own .env file contains.
+
+    When called from the web UI (project-based run):
+    - COBOL_SOURCE_DIR and MAPA_CSV_PATH are derived from *cobol_dir* so that
+      result.csv is written next to the uploaded COBOL source, not at the
+      global MAPA_CSV_PATH declared in .env.
+    - OUTPUT_DIR is set to <project_dir>/output so generated Java files land
+      inside the project folder rather than the global ./output directory.
+
+    Python's load_dotenv() never overrides env vars that are already set, so
+    these values take precedence over whatever is in the pipeline's .env file.
+
+    When called from the CLI (no project context), cobol_dir/project_dir are
+    None and the pipeline falls back to its own .env settings unchanged.
     """
+    from pathlib import Path as _Path
+
     env = os.environ.copy()
     env["MAPA_JAR_PATH"] = settings.MAPA_JAR_PATH
     env["MAPA_AUTO_DOWNLOAD"] = str(settings.MAPA_AUTO_DOWNLOAD).lower()
+
+    if cobol_dir:
+        env["COBOL_SOURCE_DIR"] = cobol_dir
+        env["MAPA_CSV_PATH"] = str(_Path(cobol_dir) / "result.csv")
+
+    if project_dir:
+        env["OUTPUT_DIR"] = str(_Path(project_dir) / "output")
+
     return env
 
 
@@ -192,14 +216,19 @@ async def run_migration(pool: asyncpg.Pool, run_id: str, project_id: str,
     if copybook_dir:
         cmd += ["--copy", copybook_dir]
 
+    project_dir = str(settings.projects_dir / project_id)
+
     try:
         _validate_pipeline(settings)
 
         async def _log(text):
             await _save_log(pool, run_id, text, _parse_level(text), _parse_step(text))
 
-        returncode = await _run_subprocess(cmd, settings.COBOL_MIGRATION_DIR,
-                                           _subprocess_env(settings), _log)
+        returncode = await _run_subprocess(
+            cmd, settings.COBOL_MIGRATION_DIR,
+            _subprocess_env(settings, cobol_dir=cobol_dir, project_dir=project_dir),
+            _log,
+        )
         final_status = "completed" if returncode == 0 else "failed"
         if returncode != 0:
             await _save_log(pool, run_id,
@@ -242,14 +271,26 @@ async def run_retry(pool: asyncpg.Pool, run_id: str, project_id: str,
     if program:
         cmd += ["--program", program]
 
+    # Resolve project-scoped paths so retry writes to the same output folder
+    # as the original migration run (not to the global .env OUTPUT_DIR).
+    async with pool.acquire() as conn:
+        proj_row = await conn.fetchrow(
+            "SELECT cobol_dir FROM projects WHERE id=$1", project_id
+        )
+    project_cobol_dir = proj_row["cobol_dir"] if proj_row else None
+    project_dir = str(settings.projects_dir / project_id)
+
     try:
         _validate_pipeline(settings)
 
         async def _log(text):
             await _save_log(pool, run_id, text, _parse_level(text), _parse_step(text))
 
-        returncode = await _run_subprocess(cmd, settings.COBOL_MIGRATION_DIR,
-                                           _subprocess_env(settings), _log)
+        returncode = await _run_subprocess(
+            cmd, settings.COBOL_MIGRATION_DIR,
+            _subprocess_env(settings, cobol_dir=project_cobol_dir, project_dir=project_dir),
+            _log,
+        )
         final_status = "completed" if returncode == 0 else "failed"
         if returncode != 0:
             await _save_log(pool, run_id,
