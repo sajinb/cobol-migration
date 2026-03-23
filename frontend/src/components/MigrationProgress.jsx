@@ -62,7 +62,7 @@ export default function MigrationProgress({ projectId, runId, initialStatus, onC
   const [logs, setLogs]         = useState([])
   const [status, setStatus]     = useState(initialStatus || 'running')
   const [activeStep, setActive] = useState('mapa')
-  const bottomRef               = useRef()
+  const logBoxRef               = useRef()
 
   // If already completed/failed, load logs from API
   useEffect(() => {
@@ -88,9 +88,10 @@ export default function MigrationProgress({ projectId, runId, initialStatus, onC
     return close
   }, [runId, status])
 
-  // Auto-scroll to bottom
+  // Auto-scroll the log box to bottom (not the whole page)
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = logBoxRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [logs])
 
   const running = status === 'running' || status === 'pending'
@@ -110,7 +111,7 @@ export default function MigrationProgress({ projectId, runId, initialStatus, onC
       <StepBar activeStep={activeStep} status={status} />
 
       {/* Terminal log */}
-      <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 h-96 overflow-y-auto font-mono text-xs leading-relaxed">
+      <div ref={logBoxRef} className="bg-slate-950 border border-slate-800 rounded-xl p-4 h-96 overflow-y-auto font-mono text-xs leading-relaxed">
         {logs.length === 0 && running && (
           <span className="text-slate-600">Waiting for output…</span>
         )}
@@ -128,7 +129,6 @@ export default function MigrationProgress({ projectId, runId, initialStatus, onC
             {log.message}
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
     </div>
   )
