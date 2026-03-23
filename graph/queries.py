@@ -163,13 +163,27 @@ class GraphQueries:
         """
         return self._neo4j.query(cypher)
 
-    def get_migration_summary(self) -> Dict:
-        """High-level counts for the migration dashboard."""
-        cypher = """
-        MATCH (p:Paragraph)
-        RETURN p.status AS status, count(*) AS count
+    def get_migration_summary(self, programs: List[str] = None) -> Dict:
         """
-        rows = self._neo4j.query(cypher)
+        High-level paragraph counts grouped by status.
+
+        When *programs* is provided only paragraphs belonging to those programs
+        are counted, preventing stale data from previous pipeline runs (other
+        programs still in Neo4j) from inflating the numbers.
+        """
+        if programs:
+            cypher = """
+            MATCH (p:Paragraph)
+            WHERE p.program IN $programs
+            RETURN p.status AS status, count(*) AS count
+            """
+            rows = self._neo4j.query(cypher, {"programs": programs})
+        else:
+            cypher = """
+            MATCH (p:Paragraph)
+            RETURN p.status AS status, count(*) AS count
+            """
+            rows = self._neo4j.query(cypher)
         return {row["status"]: row["count"] for row in rows}
 
     def get_migrated_code(self, program: str) -> List[Dict]:

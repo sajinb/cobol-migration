@@ -282,7 +282,8 @@ def _generate_report(state: OrchestratorState) -> OrchestratorState:
     """Compile the final migration report from Neo4j status counts."""
     neo4j = Neo4jTools()
     queries = GraphQueries(neo4j)
-    summary = queries.get_migration_summary()
+    programs = state.get("programs_to_migrate") or []
+    summary  = queries.get_migration_summary(programs=programs or None)
     circular = queries.get_circular_call_chains()
     neo4j.close()
 
