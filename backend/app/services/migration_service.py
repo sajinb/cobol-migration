@@ -11,7 +11,12 @@ import asyncpg
 from ..config import get_settings
 
 # Log line format:  2024-01-01 12:00:00  INFO      agents.migration_agent — msg
-_LOG_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+(\w+)\s+(\S+)\s+[—-]")
+# The separator between the module name and message is normally an em dash (—,
+# U+2014) but on Windows Python may encode it as cp1252 byte 0x97 which, when
+# re-read as UTF-8 with errors='replace', becomes U+FFFD (the replacement char,
+# often rendered as ◆).  The pattern accepts any single non-whitespace char as
+# the separator so it matches regardless of encoding round-trip artefacts.
+_LOG_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+(\w+)\s+(\S+)\s+\S")
 
 # Map logger module name fragments → UI step name.
 # Modules not listed here return step=None (frontend keeps the last known step).
@@ -96,6 +101,13 @@ def _subprocess_env(
     from pathlib import Path as _Path
 
     env = os.environ.copy()
+    # Force the pipeline subprocess to use UTF-8 for stdout/stderr on all
+    # platforms (critical on Windows where the default console encoding is
+    # cp1252 — without this, multi-byte chars like the em dash in the logging
+    # format are emitted as single cp1252 bytes that fail the UTF-8 decode in
+    # _run_subprocess and are replaced with U+FFFD, breaking _LOG_RE matching).
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"          # PEP 540 — Python 3.7+
     env["MAPA_JAR_PATH"] = settings.MAPA_JAR_PATH
     env["MAPA_AUTO_DOWNLOAD"] = str(settings.MAPA_AUTO_DOWNLOAD).lower()
 
