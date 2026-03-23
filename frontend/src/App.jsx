@@ -1,9 +1,11 @@
-import { Routes, Route, Link } from 'react-router-dom'
+import { Routes, Route, Link, useLocation } from 'react-router-dom'
 import { Terminal } from 'lucide-react'
 import ProjectsPage from './pages/ProjectsPage'
 import ProjectDetailPage from './pages/ProjectDetailPage'
+import AboutPage from './pages/AboutPage'
 
 export default function App() {
+  const { pathname } = useLocation()
   return (
     <div className="min-h-screen flex flex-col">
       {/* Top nav */}
@@ -16,6 +18,17 @@ export default function App() {
           <span className="text-slate-600 text-sm ml-2">
             COBOL → Java Spring Boot
           </span>
+          <nav className="ml-auto flex items-center gap-1">
+            <Link
+              to="/about"
+              className={`text-sm px-3 py-1.5 rounded-lg transition-colors
+                ${pathname === '/about'
+                  ? 'bg-slate-800 text-slate-100'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'}`}
+            >
+              About
+            </Link>
+          </nav>
         </div>
       </header>
 
@@ -24,6 +37,7 @@ export default function App() {
         <Routes>
           <Route path="/"               element={<ProjectsPage />} />
           <Route path="/projects/:id"   element={<ProjectDetailPage />} />
+          <Route path="/about"          element={<AboutPage />} />
         </Routes>
       </main>
     </div>
