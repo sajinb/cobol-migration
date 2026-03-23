@@ -114,11 +114,21 @@ def _subprocess_env(
     if cobol_dir:
         env["COBOL_SOURCE_DIR"] = cobol_dir
         env["MAPA_CSV_PATH"] = str(_Path(cobol_dir) / "result.csv")
-        # Default copybook dir to the COBOL source dir itself so that
-        # co-located .cpy files are found even when the project DB row has
-        # copybook_dir=NULL.  An explicit --copy CLI arg still takes precedence
-        # because OrchestratorAgent.run() uses "copybook_dir or settings.MAPA_COPYBOOK_DIR".
-        env["MAPA_COPYBOOK_DIR"] = cobol_dir
+        # Auto-detect common copybook subdirectory names inside cobol_dir
+        # (copy/, copybooks/, copybook/, cpy/).  This ensures the MAPA -copy
+        # flag is set correctly even when the project DB row has copybook_dir=NULL
+        # and the copybooks live in a subdirectory rather than alongside the .cbl
+        # files.  An explicit --copy CLI arg still takes precedence because
+        # OrchestratorAgent.run() uses "copybook_dir or settings.MAPA_COPYBOOK_DIR".
+        _copy_subdir = next(
+            (
+                str(_Path(cobol_dir) / sub)
+                for sub in ("copy", "copybooks", "copybook", "cpy")
+                if (_Path(cobol_dir) / sub).is_dir()
+            ),
+            cobol_dir,  # fall back to cobol_dir itself (co-located .cpy files)
+        )
+        env["MAPA_COPYBOOK_DIR"] = _copy_subdir
 
     if project_dir:
         env["OUTPUT_DIR"] = str(_Path(project_dir) / "output")
