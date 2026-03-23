@@ -27,6 +27,10 @@ env/
 .DS_Store
 Thumbs.db
 
+# Node
+node_modules/
+frontend/dist/
+
 # Project outputs
 result.csv
 *.csv
