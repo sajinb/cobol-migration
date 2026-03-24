@@ -5,8 +5,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/cobol_migration"
 
-    # Root of the cobol-migration repo (parent of backend/).
-    # Computed automatically from __file__ — override in .env if the backend
+    # Root of the cobol-migration repo (parent of api/).
+    # Computed automatically from __file__ — override in .env if the api
     # is deployed separately from the pipeline code, e.g.:
     #   COBOL_MIGRATION_DIR=C:\path\to\cobol-migration
     COBOL_MIGRATION_DIR: str = str(Path(__file__).resolve().parent.parent.parent)

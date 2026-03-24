@@ -143,16 +143,16 @@ def _validate_pipeline(settings) -> None:
 
     Two failure modes are caught:
     1. main.py does not exist at all.
-    2. main.py exists but belongs to the backend (backend/app/main.py) rather
+    2. main.py exists but belongs to the api (api/app/main.py) rather
        than the pipeline root — detected by the absence of an agents/ directory
        alongside it.  This happens when COBOL_MIGRATION_DIR is auto-computed
-       from __file__ and resolves to backend/app/ instead of the project root.
+       from __file__ and resolves to api/app/ instead of the project root.
     """
     from pathlib import Path as _Path
 
     def _fix_hint():
         return (
-            f"Fix — add one of the following to your backend/.env file:\n"
+            f"Fix — add one of the following to your api/.env file:\n"
             f"\n"
             f"  Option A — point directly to main.py:\n"
             f"    PIPELINE_MAIN_PY=C:\\path\\to\\cobol-migration\\main.py\n"
@@ -171,22 +171,22 @@ def _validate_pipeline(settings) -> None:
         raise RuntimeError(
             f"Pipeline entry-point not found: {main_py}\n"
             f"\n"
-            f"The backend cannot locate main.py. This usually means the backend\n"
+            f"The api cannot locate main.py. This usually means the api\n"
             f"is deployed in a different directory from the pipeline code.\n"
             f"\n"
             + _fix_hint()
         )
 
-    # Verify this is the pipeline's main.py and not the backend's main.py.
-    # The pipeline root always contains an agents/ directory; the backend does not.
+    # Verify this is the pipeline's main.py and not the api's main.py.
+    # The pipeline root always contains an agents/ directory; the api does not.
     pipeline_dir = main_py.parent
     if not (pipeline_dir / "agents").is_dir():
         raise RuntimeError(
             f"Wrong main.py resolved: {main_py}\n"
             f"\n"
-            f"The file exists but it appears to be the backend entry-point, not\n"
+            f"The file exists but it appears to be the api entry-point, not\n"
             f"the pipeline entry-point (no 'agents/' directory found alongside it).\n"
-            f"COBOL_MIGRATION_DIR is likely pointing at backend/app/ instead of\n"
+            f"COBOL_MIGRATION_DIR is likely pointing at api/app/ instead of\n"
             f"the project root.\n"
             f"\n"
             + _fix_hint()
