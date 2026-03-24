@@ -176,8 +176,14 @@ class MapaRunner:
 
         logger.debug("Filelist contents:\n%s", posix_paths)
 
+        # Normalise copybook dir: create uppercase-named symlinks in a temp dir
+        # so MAPA can find members regardless of on-disk capitalisation.
+        resolved_copybook_dir = (
+            self._normalise_copybook_dir(copybook_dir) if copybook_dir else None
+        )
+
         try:
-            cmd = self._build_command(flist_path, csv_path, copybook_dir, extra_args or [])
+            cmd = self._build_command(flist_path, csv_path, resolved_copybook_dir, extra_args or [])
             logger.info("MAPA command: %s", " ".join(str(c) for c in cmd))
 
             # 5. Execute
@@ -256,7 +262,7 @@ class MapaRunner:
                         preprocessed_flist = pflist.name
 
                     cmd_pre = self._build_command(
-                        preprocessed_flist, csv_path, copybook_dir, extra_args or []
+                        preprocessed_flist, csv_path, resolved_copybook_dir, extra_args or []
                     )
                     logger.info(
                         "MAPA retry command (preprocessed): %s",
@@ -576,3 +582,47 @@ class MapaRunner:
                 return sum(1 for line in f if line.strip())
         except Exception:
             return -1
+
+    def _normalise_copybook_dir(self, copybook_dir: str) -> str:
+        """
+        MAPA's JAR looks up copybooks by their COPY member name (e.g. EMPREC)
+        and appends a fixed extension.  On Linux the file-system is case-sensitive,
+        so a file named ``emprec.cpy`` will NOT be found when MAPA looks for
+        ``EMPREC`` (or vice-versa).
+
+        This method creates a temporary directory that contains uppercase-named
+        symlinks pointing at every copybook found in the original directory.
+        The temp dir is passed to MAPA via -copy so the JAR always finds the
+        member regardless of how the original file is capitalised.
+
+        The temp dir is cleaned up by the OS on reboot (it lives under /tmp).
+        A fresh one is created on every run so stale links are never used.
+        """
+        src = Path(copybook_dir)
+        if not src.is_dir():
+            return copybook_dir  # nothing to do
+
+        tmp = Path(tempfile.mkdtemp(prefix="mapa_copybooks_"))
+        extensions = {".cpy", ".CPY", ".copy", ".COPY", ".cbl", ".CBL"}
+        linked = 0
+        for f in src.iterdir():
+            if not f.is_file():
+                continue
+            if f.suffix.lower() not in {e.lower() for e in extensions}:
+                continue
+            # Create an UPPERCASE stem + original extension link so MAPA finds it
+            upper_name = f.stem.upper() + f.suffix
+            link = tmp / upper_name
+            if not link.exists():
+                link.symlink_to(f.resolve())
+                linked += 1
+            # Also keep the original name if it differs (belt-and-braces)
+            orig_link = tmp / f.name
+            if not orig_link.exists():
+                orig_link.symlink_to(f.resolve())
+
+        logger.debug(
+            "Copybook normalisation: %d symlinks created in %s → %s",
+            linked, src, tmp,
+        )
+        return str(tmp)
