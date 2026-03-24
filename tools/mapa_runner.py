@@ -585,44 +585,43 @@ class MapaRunner:
 
     def _normalise_copybook_dir(self, copybook_dir: str) -> str:
         """
-        MAPA's JAR looks up copybooks by their COPY member name (e.g. EMPREC)
-        and appends a fixed extension.  On Linux the file-system is case-sensitive,
-        so a file named ``emprec.cpy`` will NOT be found when MAPA looks for
-        ``EMPREC`` (or vice-versa).
+        MAPA's JAR resolves a COPY member (e.g. ``COPY EMPREC``) by looking for
+        a file whose name is **exactly the member name with no extension** in the
+        -copy directory.  From the MAPA readme "Real Example":
 
-        This method creates a temporary directory that contains uppercase-named
-        symlinks pointing at every copybook found in the original directory.
-        The temp dir is passed to MAPA via -copy so the JAR always finds the
-        member regardless of how the original file is capitalised.
+            "These have a file extension for some reason and I need to remove it
+             because the COBOL code that uses them does not make reference to the
+             extension."
+            find -name "*.CPY" -exec sh -c 'mv "$1" "${1%.CPY}"' _ {} \\;
 
-        The temp dir is cleaned up by the OS on reboot (it lives under /tmp).
-        A fresh one is created on every run so stale links are never used.
+        So ``EMPREC.CPY`` on disk will never be matched — MAPA looks for ``EMPREC``.
+
+        This method creates a temporary directory containing extension-less
+        symlinks (uppercase stem) for every copybook file found, so the JAR
+        resolves members regardless of how the files are named on disk.
+
+        The temp dir lives under /tmp and is recreated fresh on every run.
         """
         src = Path(copybook_dir)
         if not src.is_dir():
             return copybook_dir  # nothing to do
 
         tmp = Path(tempfile.mkdtemp(prefix="mapa_copybooks_"))
-        extensions = {".cpy", ".CPY", ".copy", ".COPY", ".cbl", ".CBL"}
+        copybook_exts = {".cpy", ".copy"}  # lowercase comparison
         linked = 0
         for f in src.iterdir():
             if not f.is_file():
                 continue
-            if f.suffix.lower() not in {e.lower() for e in extensions}:
+            if f.suffix.lower() not in copybook_exts:
                 continue
-            # Create an UPPERCASE stem + original extension link so MAPA finds it
-            upper_name = f.stem.upper() + f.suffix
-            link = tmp / upper_name
-            if not link.exists():
-                link.symlink_to(f.resolve())
+            # Extension-less, uppercase link — what MAPA actually looks for
+            ext_less = tmp / f.stem.upper()
+            if not ext_less.exists():
+                ext_less.symlink_to(f.resolve())
                 linked += 1
-            # Also keep the original name if it differs (belt-and-braces)
-            orig_link = tmp / f.name
-            if not orig_link.exists():
-                orig_link.symlink_to(f.resolve())
 
         logger.debug(
-            "Copybook normalisation: %d symlinks created in %s → %s",
+            "Copybook normalisation: %d extension-less symlinks created in %s → %s",
             linked, src, tmp,
         )
         return str(tmp)
