@@ -7,6 +7,7 @@ import {
 import { getProject, startMigration, getRuns } from '../services/api'
 import SourceSetup from '../components/SourceSetup'
 import MigrationProgress from '../components/MigrationProgress'
+import MigrationConfig from '../components/MigrationConfig'
 
 const STATUS_BADGE = {
   pending:   'bg-slate-700 text-slate-300',
@@ -125,6 +126,15 @@ export default function ProjectDetailPage() {
             )}
           </div>
         )}
+      </div>
+
+      {/* Migration config */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold">Migration Config</h2>
+          <span className="text-xs text-slate-500">optional — improves Java accuracy</span>
+        </div>
+        <MigrationConfig projectId={id} hasSource={!!project.cobol_dir} />
       </div>
 
       {/* Active migration run */}

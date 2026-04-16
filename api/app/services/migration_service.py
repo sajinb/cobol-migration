@@ -132,6 +132,10 @@ def _subprocess_env(
 
     if project_dir:
         env["OUTPUT_DIR"] = str(_Path(project_dir) / "output")
+        # Point the pipeline at the project-specific migration_config.yaml if it exists
+        cfg = _Path(project_dir) / "migration_config.yaml"
+        if cfg.exists():
+            env["MIGRATION_CONFIG_PATH"] = str(cfg)
 
     return env
 

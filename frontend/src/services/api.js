@@ -29,6 +29,16 @@ export const getRuns = (projectId) =>
 export const getLogs = (projectId, runId) =>
   http.get(`/projects/${projectId}/runs/${runId}/logs`).then(r => r.data)
 
+// ── Migration Config ──────────────────────────────────────────────────────────
+export const generateConfig = (projectId) =>
+  http.post(`/projects/${projectId}/config/generate`).then(r => r.data)
+
+export const getConfig = (projectId) =>
+  http.get(`/projects/${projectId}/config`).then(r => r.data)
+
+export const saveConfig = (projectId, yaml) =>
+  http.put(`/projects/${projectId}/config`, { yaml }).then(r => r.data)
+
 /**
  * Open an SSE connection to stream migration logs.
  * Returns a cleanup function that closes the EventSource.
