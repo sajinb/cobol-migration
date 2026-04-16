@@ -101,10 +101,17 @@ def _write_yaml(data: dict, output_path: str) -> None:
     header = """\
 # migration_config.yaml — auto-generated skeleton
 # ================================================
-# Fields marked with "null" require human input before running the migration.
-# Fields already populated were extracted from the Neo4j graph after ingestion.
+# Fields marked with "null" are OPTIONAL — the pipeline runs with sensible defaults
+# if you leave them as-is. Fill them in to get more accurate Java output.
 #
-# Instructions:
+# Defaults used when a field is null:
+#   target.package      → com.migration.<programname>
+#   target_class        → <ProgramName>Service  (derived from COBOL program name)
+#   external_calls.type → autowired
+#   external_calls.service_class → <CalledProgram>Service  (derived)
+#   db2_tables.<TABLE>  → <TableName>  (CamelCase of the table name)
+#
+# To improve accuracy, fill in:
 #   1. target.package      — your Java base package (e.g. com.mybank.payroll)
 #   2. programs[].target_class — the Spring @Service class name (e.g. EmployeeService)
 #   3. external_calls[].type:

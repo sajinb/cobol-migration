@@ -250,38 +250,48 @@ def build_migration_prompt(
     package_name = program.lower().replace("-", "")
     class_name   = "".join(p.capitalize() for p in program.replace("-", "_").split("_")) + "Service"
 
+    def _to_pascal(name: str) -> str:
+        return "".join(w.capitalize() for w in name.replace("-", "_").split("_"))
+
     prog_cfg = {}
     if project_config:
         for entry in (project_config.get("programs") or []):
             if entry.get("name") == program:
                 prog_cfg = entry
                 break
-        if project_config.get("target", {}).get("package"):
-            package_name = project_config["target"]["package"] + "." + package_name
+        pkg = (project_config.get("target") or {}).get("package") or None
+        if pkg:
+            package_name = f"{pkg}.{package_name}"
         if prog_cfg.get("target_class"):
             class_name = prog_cfg["target_class"]
 
-    # Build === PROJECT CONTEXT === section from migration_config.yaml if available
+    # Build === PROJECT CONTEXT === section — always emit if config exists,
+    # falling back to sensible defaults for any null field.
     project_ctx_lines = []
-    if prog_cfg.get("target_class"):
-        project_ctx_lines.append(f"  target_class   : {prog_cfg['target_class']}")
-    if project_config and project_config.get("target", {}).get("package"):
-        project_ctx_lines.append(f"  base_package   : {project_config['target']['package']}")
-    for call in (prog_cfg.get("external_calls") or []):
-        call_type = call.get("type") or "autowired"
-        svc = call.get("service_class") or ""
-        project_ctx_lines.append(
-            f"  external_call  : {call['program']} → {call_type}"
-            + (f" ({svc})" if svc else "")
-        )
     if project_config:
+        pkg = (project_config.get("target") or {}).get("package") or None
+        if pkg:
+            project_ctx_lines.append(f"  base_package   : {pkg}")
+
+        for call in (prog_cfg.get("external_calls") or []):
+            call_prog = call.get("program", "")
+            call_type = call.get("type") or "autowired"           # default: autowired
+            svc = call.get("service_class") or f"{_to_pascal(call_prog)}Service"  # default: derived
+            project_ctx_lines.append(
+                f"  external_call  : {call_prog} → {call_type} ({svc})"
+            )
+
         for tbl, entity in (project_config.get("db2_tables") or {}).items():
-            if entity:
-                project_ctx_lines.append(f"  db2_table      : {tbl} → @Entity {entity}")
-    for override_pic, java_type in (project_config or {}).get("pic_overrides", {}).items():
-        project_ctx_lines.append(f"  pic_override   : PIC {override_pic} → {java_type}")
-    for rule in (prog_cfg.get("business_rules") or []):
-        project_ctx_lines.append(f"  business_rule  : {rule}")
+            entity_name = entity or _to_pascal(tbl)               # default: CamelCase table name
+            project_ctx_lines.append(f"  db2_table      : {tbl} → @Entity {entity_name}")
+
+        for override_pic, java_type in (project_config.get("pic_overrides") or {}).items():
+            if java_type:
+                project_ctx_lines.append(f"  pic_override   : PIC {override_pic} → {java_type}")
+
+        for rule in (prog_cfg.get("business_rules") or []):
+            project_ctx_lines.append(f"  business_rule  : {rule}")
+
     project_ctx_section = (
         "\n=== PROJECT CONTEXT (from migration_config.yaml) ===\n"
         + "\n".join(project_ctx_lines)
