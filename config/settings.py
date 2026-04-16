@@ -55,6 +55,11 @@ class Settings:
     MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "3"))
     RETRY_DELAY_SECONDS: int = int(os.getenv("RETRY_DELAY_SECONDS", "2"))
 
+    # Optional project-level migration config YAML.
+    # Run  python main.py config-init  to auto-generate a skeleton from Neo4j.
+    # Leave unset or empty to run without any project config.
+    MIGRATION_CONFIG_PATH: str = os.getenv("MIGRATION_CONFIG_PATH", "./migration_config.yaml")
+
     # Migration status values tracked in Neo4j
     STATUS_PENDING: str = "pending"
     STATUS_INGESTED: str = "ingested"
@@ -62,6 +67,29 @@ class Settings:
     STATUS_MIGRATED: str = "migrated"
     STATUS_VALIDATED: str = "validated"
     STATUS_FAILED: str = "failed"
+
+
+def load_migration_config(path: str = None) -> dict:
+    """
+    Load migration_config.yaml if it exists and return as a dict.
+    Returns an empty dict when the file is absent or path is blank.
+    The result is NOT cached — callers that need it at prompt-build time
+    should call this once and pass it down.
+    """
+    import yaml
+
+    cfg_path = path or get_settings().MIGRATION_CONFIG_PATH
+    if not cfg_path:
+        return {}
+    from pathlib import Path as _Path
+    p = _Path(cfg_path)
+    if not p.exists():
+        return {}
+    try:
+        with p.open(encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    except Exception:
+        return {}
 
 
 @lru_cache(maxsize=1)

@@ -18,7 +18,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import AIMessage, HumanMessage
 
-from config.settings import get_settings
+from config.settings import get_settings, load_migration_config
 from tools.neo4j_tools import Neo4jTools
 from tools.file_tools import FileTools
 from tools.llm_tools import LLMTools
@@ -112,6 +112,7 @@ def _generate_java(state: MigrationState) -> MigrationState:
             shared_state_items=state.get("shared_state_items", []),
             copybooks=sg.get("copybooks", []),
             migration_notes=state.get("failure_reason", ""),
+            project_config=load_migration_config(),
         )
         llm = LLMTools()
         java_code = llm.call_with_retry(MIGRATION_SYSTEM_PROMPT, human_prompt)

@@ -14,6 +14,8 @@ Or individual phases:
     python main.py validate --program POLICY --paragraph CALC-PREMIUM
     python main.py report
     python main.py schema
+    python main.py config-init                                   # after ingest; generates migration_config.yaml
+    python main.py config-init --output ./my_config.yaml
 """
 
 import argparse
@@ -254,6 +256,19 @@ def cmd_schema(_args):
     print("Neo4j schema applied successfully.")
 
 
+def cmd_config_init(args):
+    """
+    Auto-generate migration_config.yaml skeleton from Neo4j graph data.
+    Run after 'ingest' so all program/copybook/call data is available.
+    """
+    from config.config_generator import generate
+    output = args.output or "./migration_config.yaml"
+    generate(output_path=output)
+    print("\nNext steps:")
+    print("  1. Open the generated YAML and fill in all 'null' fields.")
+    print("  2. Re-run the migration:  python main.py run --cobol-dir <dir>")
+
+
 # ------------------------------------------------------------------ #
 #  CLI                                                                #
 # ------------------------------------------------------------------ #
@@ -312,6 +327,15 @@ def main():
     sub.add_parser("report", help="Print migration status report from Neo4j")
     sub.add_parser("schema", help="Apply Neo4j schema constraints and indexes")
 
+    p_cfg = sub.add_parser(
+        "config-init",
+        help="Auto-generate migration_config.yaml skeleton from Neo4j (run after ingest)",
+    )
+    p_cfg.add_argument(
+        "--output", default="./migration_config.yaml",
+        help="Output path for the YAML file (default: ./migration_config.yaml)",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
@@ -325,6 +349,7 @@ def main():
         "retry": cmd_retry,
         "report": cmd_report,
         "schema": cmd_schema,
+        "config-init": cmd_config_init,
     }
 
     if args.command not in dispatch:

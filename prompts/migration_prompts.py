@@ -212,6 +212,7 @@ def build_migration_prompt(
     shared_state_items: List[str],
     copybooks: List[str] = None,
     migration_notes: str = "",
+    project_config: Dict = None,
 ) -> str:
     # For each PERFORM target, show the Java signature if already migrated,
     # otherwise fall back to the COBOL source so the LLM has context.
@@ -245,19 +246,56 @@ def build_migration_prompt(
     shared_text = "\n".join(f"  - {s}" for s in shared_state_items) or "  (none)"
     copybooks_text = "\n".join(f"  - {cb}" for cb in (copybooks or [])) or "  (none)"
 
-    # Derive Spring Boot naming from the COBOL program name
+    # Derive Spring Boot naming from the COBOL program name, overridable via project_config
     package_name = program.lower().replace("-", "")
     class_name   = "".join(p.capitalize() for p in program.replace("-", "_").split("_")) + "Service"
+
+    prog_cfg = {}
+    if project_config:
+        for entry in (project_config.get("programs") or []):
+            if entry.get("name") == program:
+                prog_cfg = entry
+                break
+        if project_config.get("target", {}).get("package"):
+            package_name = project_config["target"]["package"] + "." + package_name
+        if prog_cfg.get("target_class"):
+            class_name = prog_cfg["target_class"]
+
+    # Build === PROJECT CONTEXT === section from migration_config.yaml if available
+    project_ctx_lines = []
+    if prog_cfg.get("target_class"):
+        project_ctx_lines.append(f"  target_class   : {prog_cfg['target_class']}")
+    if project_config and project_config.get("target", {}).get("package"):
+        project_ctx_lines.append(f"  base_package   : {project_config['target']['package']}")
+    for call in (prog_cfg.get("external_calls") or []):
+        call_type = call.get("type") or "autowired"
+        svc = call.get("service_class") or ""
+        project_ctx_lines.append(
+            f"  external_call  : {call['program']} → {call_type}"
+            + (f" ({svc})" if svc else "")
+        )
+    if project_config:
+        for tbl, entity in (project_config.get("db2_tables") or {}).items():
+            if entity:
+                project_ctx_lines.append(f"  db2_table      : {tbl} → @Entity {entity}")
+    for override_pic, java_type in (project_config or {}).get("pic_overrides", {}).items():
+        project_ctx_lines.append(f"  pic_override   : PIC {override_pic} → {java_type}")
+    for rule in (prog_cfg.get("business_rules") or []):
+        project_ctx_lines.append(f"  business_rule  : {rule}")
+    project_ctx_section = (
+        "\n=== PROJECT CONTEXT (from migration_config.yaml) ===\n"
+        + "\n".join(project_ctx_lines)
+        + "\nApply these settings when generating the Java method.\n"
+    ) if project_ctx_lines else ""
 
     return f"""Migrate the following COBOL paragraph to a Spring Boot method fragment.
 
 Target class   : {class_name}
-Target package : com.migration.{package_name}
+Target package : {package_name}
 Program        : {program}
 Paragraph      : {para_name}
 Intent         : {intent or '(not analysed yet)'}
-{f'Notes     : {migration_notes}' if migration_notes else ''}
-
+{f'Notes          : {migration_notes}' if migration_notes else ''}{project_ctx_section}
 === COBOL SOURCE ===
 {source_code or '(source not available)'}
 
